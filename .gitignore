@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+build/
+dist/
+out/
+release/
+
+# Environment variables
+.env
+.env.local
+.env.*
+
+# User uploads
+uploads/
+
+# Logs
+*.log
+
+# Temporary Microsoft Office files
+~$*.doc
+~$*.docx
+~$*.xls
+~$*.xlsx
+
+# OS files
+.DS_Store
+Thumbs.db

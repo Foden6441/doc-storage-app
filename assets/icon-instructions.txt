@@ -1,0 +1,28 @@
+ICON REQUIREMENTS FOR DOCUMENT STORAGE APP
+==========================================
+
+To properly package your app, you need to add the following icon files to this assets folder:
+
+WINDOWS (.ico format):
+- icon.ico (256x256 pixels recommended)
+
+MACOS (.icns format):
+- icon.icns (512x512 pixels recommended)
+
+LINUX (.png format):
+- icon.png (512x512 pixels recommended)
+
+ICON DESIGN SUGGESTIONS:
+- Use a document/folder theme (📁📄)
+- Keep it simple and recognizable at small sizes
+- Use your brand colors
+- Ensure good contrast
+
+TOOLS TO CREATE ICONS:
+- Online: favicon.io, iconifier.net
+- Software: GIMP, Photoshop, Figma
+- Convert PNG to ICO: online-convert.com
+
+TEMPORARY SOLUTION:
+For now, the app will build without custom icons and use default Electron icons.
+You can add proper icons later and rebuild.
