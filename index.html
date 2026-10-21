@@ -76,14 +76,21 @@
             width: 320px;
             background: var(--surface);
             backdrop-filter: blur(20px);
-            border-right: 1px solid var(--border-color);
             padding: 24px;
+            border-right: 1px solid var(--border-color);
+            overflow-y: auto;
+            max-height: 100vh;
+            transition: width 0.3s ease, padding 0.3s ease;
             display: flex;
             flex-direction: column;
             box-shadow: var(--shadow-lg);
             z-index: 10;
-            overflow-y: auto;
-            max-height: 100vh;
+        }
+
+        .sidebar.collapsed {
+            width: 0;
+            padding: 24px 0;
+            overflow: hidden;
         }
 
         .sidebar::-webkit-scrollbar {
@@ -1833,6 +1840,9 @@
 </head>
 <body>
     <div class="container">
+        <button id="sidebar-toggle-btn" style="position: fixed; top: 20px; left: 20px; z-index: 1000; background: var(--surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; cursor: pointer; display: flex; align-items: center; gap: 8px; box-shadow: var(--shadow);">
+            <i data-lucide="menu"></i>
+        </button>
         <div class="sidebar">
             <div class="header">
                 <h1><i data-lucide="folder-open"></i> <span data-i18n="appTitle">DocStore</span></h1>
@@ -1902,6 +1912,9 @@
                 </button>
                 <button class="sidebar-btn" id="nav-more-btn" data-i18n="more">
                     <i data-lucide="more-horizontal"></i> More Options
+                </button>
+                <button class="sidebar-btn" id="nav-admin-btn" style="display: none;">
+                    <i data-lucide="shield"></i> Super Admin
                 </button>
             </div>
 
@@ -2013,7 +2026,6 @@
                     <button type="button" class="more-tab" data-more-tab="profile" data-i18n="tabProfile"><i data-lucide="user"></i> Profile</button>
                     <button type="button" class="more-tab" data-more-tab="password" data-i18n="tabPassword"><i data-lucide="lock"></i> Change Password</button>
                     <button type="button" class="more-tab" data-more-tab="session" data-i18n="tabSession"><i data-lucide="clock"></i> Session</button>
-                    <button type="button" class="more-tab" data-more-tab="admin" id="admin-tab-btn" style="display: none;"><i data-lucide="shield"></i> Admin</button>
                 </div>
 
                 <div id="more-settings-panel" class="more-panel active">
@@ -2097,7 +2109,7 @@
 
                     <div class="settings-group">
                         <h3 data-i18n="cloudSyncTitle">Cloud Sync</h3>
-                        <p data-i18n="cloudSyncDesc">Your data is automatically synced to Firebase cloud storage. Authentication is handled through Firebase.</p>
+                        <p data-i18n="cloudSyncDesc">Your files stay on this computer and are backed up to your signed-in cloud account. Sign in with the same email on a new computer to restore them.</p>
                         <div id="firebase-status-message" style="margin-top: 15px; padding: 12px; background: rgba(39, 174, 96, 0.1); border: 1px solid #27ae60; border-radius: 8px; color: #27ae60;">
                             <strong>✓ Firebase Authentication Enabled</strong><br>
                             <small>You're logged in with Firebase. Your data is automatically synced to the cloud.</small>
@@ -2130,8 +2142,8 @@
                         </div>
                         <div id="firebase-sync-section" style="display: none; margin-top: 15px;">
                             <div class="settings-row">
-                                <button type="button" class="btn btn-secondary" id="sync-to-cloud-btn" data-i18n="syncToCloud">Sync to Cloud</button>
-                                <button type="button" class="btn btn-secondary" id="sync-from-cloud-btn" data-i18n="syncFromCloud">Sync from Cloud</button>
+                                <button type="button" class="btn btn-secondary" id="sync-to-cloud-btn" data-i18n="syncToCloud">Back Up Now</button>
+                                <button type="button" class="btn btn-secondary" id="sync-from-cloud-btn" data-i18n="syncFromCloud">Restore from Cloud</button>
                             </div>
                             <p id="sync-status-text" style="color: var(--text-secondary); margin-top: 10px; font-size: 0.9em;"></p>
                         </div>
@@ -2178,7 +2190,7 @@
                 <div id="more-admin-panel" class="more-panel">
                     <div id="admin-content">
                         <div class="admin-header">
-                            <h2><i data-lucide="shield"></i> Admin Panel</h2>
+                            <h2><i data-lucide="shield"></i> Super Admin</h2>
                             <button type="button" class="btn btn-secondary" id="refresh-admin-btn"><i data-lucide="refresh-cw"></i> Refresh</button>
                         </div>
                         
@@ -2201,7 +2213,7 @@
                                 <div class="stat-icon"><i data-lucide="shield-alert"></i></div>
                                 <div class="stat-info">
                                     <div class="stat-value" id="stat-admin-users">0</div>
-                                    <div class="stat-label">Admins</div>
+                                    <div class="stat-label">Super Admins</div>
                                 </div>
                             </div>
                             <div class="stat-card">
@@ -2215,6 +2227,33 @@
 
                         <div class="admin-users-section">
                             <h3>User Management</h3>
+                            <button class="btn btn-primary" id="admin-create-user-btn" style="margin-bottom: 20px;">+ Create New User</button>
+                            <div id="admin-create-user-form" style="display: none; background: var(--bg-secondary); padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                                <h4 style="margin-bottom: 15px;">Create New User</h4>
+                                <div class="form-group" style="margin-bottom: 15px;">
+                                    <label style="display: block; margin-bottom: 5px;">Username</label>
+                                    <input type="text" id="new-username" class="settings-input" placeholder="Enter username">
+                                </div>
+                                <div class="form-group" style="margin-bottom: 15px;">
+                                    <label style="display: block; margin-bottom: 5px;">Email</label>
+                                    <input type="email" id="new-email" class="settings-input" placeholder="Enter email">
+                                </div>
+                                <div class="form-group" style="margin-bottom: 15px;">
+                                    <label style="display: block; margin-bottom: 5px;">Password</label>
+                                    <input type="password" id="new-password" class="settings-input" placeholder="Enter password (min 6 characters)">
+                                </div>
+                                <div class="form-group" style="margin-bottom: 15px;">
+                                    <label style="display: block; margin-bottom: 5px;">Role</label>
+                                    <select id="new-role" class="settings-select">
+                                        <option value="user">User</option>
+                                        <option value="admin">Super Admin</option>
+                                    </select>
+                                </div>
+                                <div style="display: flex; gap: 10px;">
+                                    <button class="btn btn-primary" id="admin-save-user-btn">Create User</button>
+                                    <button class="btn btn-secondary" id="admin-cancel-user-btn">Cancel</button>
+                                </div>
+                            </div>
                             <div id="admin-users-table-container">
                                 <table class="admin-table">
                                     <thead>
@@ -2232,6 +2271,42 @@
                                     </thead>
                                     <tbody id="admin-users-table-body">
                                         <tr><td colspan="9" class="loading">Loading users...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="admin-subscription-section">
+                            <h3>Subscription Plans</h3>
+                            <div id="admin-subscription-plans-container">
+                                <div class="loading">Loading subscription plans...</div>
+                            </div>
+                        </div>
+
+                        <div class="admin-files-section">
+                            <h3>File Management</h3>
+                            <div style="margin-bottom: 15px;">
+                                <label for="admin-file-user-filter" style="margin-right: 10px;">Filter by User:</label>
+                                <select id="admin-file-user-filter" class="settings-select" style="width: 200px;">
+                                    <option value="">All Users</option>
+                                </select>
+                                <button class="btn btn-primary" id="admin-refresh-files-btn" style="margin-left: 10px;">Refresh</button>
+                            </div>
+                            <div id="admin-files-table-container">
+                                <table class="admin-table">
+                                    <thead>
+                                        <tr>
+                                            <th>ID</th>
+                                            <th>Name</th>
+                                            <th>User</th>
+                                            <th>Size</th>
+                                            <th>Type</th>
+                                            <th>Upload Date</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="admin-files-table-body">
+                                        <tr><td colspan="7" class="loading">Loading files...</td></tr>
                                     </tbody>
                                 </table>
                             </div>

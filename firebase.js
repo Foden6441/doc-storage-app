@@ -1,10 +1,10 @@
 // Firebase configuration for cloud storage integration
 // This file provides Firebase setup for potential cloud storage features
 
-const { initializeApp } = require('firebase/app');
-const { getStorage, ref, uploadBytes, getDownloadURL, deleteObject, getBytes } = require('firebase/storage');
-const { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, getDoc, setDoc, updateDoc, query, where, orderBy, onSnapshot } = require('firebase/firestore');
-const { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } = require('firebase/auth');
+const { initializeApp, getApps, deleteApp } = require('firebase/app');
+const { getStorage, ref, uploadBytes, deleteObject, getBytes } = require('firebase/storage');
+const { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, getDoc, setDoc, updateDoc, query, where, orderBy } = require('firebase/firestore');
+const { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, signOut, onAuthStateChanged, updateProfile, EmailAuthProvider, reauthenticateWithCredential, updatePassword } = require('firebase/auth');
 
 class FirebaseService {
     constructor() {
@@ -21,7 +21,11 @@ class FirebaseService {
     // Replace with your actual Firebase config
     initialize(config) {
         try {
-            this.app = initializeApp(config);
+            const existingApp = getApps().find(app => app.name === 'doc-storage-app');
+            if (existingApp && (existingApp.options.projectId !== config.projectId || existingApp.options.apiKey !== config.apiKey)) {
+                throw new Error('Firebase configuration changed. Restart the app to apply the new project.');
+            }
+            this.app = existingApp || initializeApp(config, 'doc-storage-app');
             this.storage = getStorage(this.app);
             this.db = getFirestore(this.app);
             this.auth = getAuth(this.app);
@@ -59,13 +63,33 @@ class FirebaseService {
             throw new Error('Firebase not initialized');
         }
 
+        let registrationApp;
         try {
-            const userCredential = await createUserWithEmailAndPassword(this.auth, email, password);
+            // Use a temporary Firebase app so admin-created accounts do not
+            // replace the Super Admin's active cloud session.
+            registrationApp = initializeApp(this.app.options, `doc-storage-registration-${require('crypto').randomUUID()}`);
+            const registrationAuth = getAuth(registrationApp);
+            const userCredential = await createUserWithEmailAndPassword(registrationAuth, email, password);
             await updateProfile(userCredential.user, { displayName: username });
-            return { success: true, user: userCredential.user };
+            return {
+                success: true,
+                user: {
+                    uid: userCredential.user.uid,
+                    email: userCredential.user.email,
+                    displayName: username
+                }
+            };
         } catch (error) {
             console.error('Error registering user:', error);
             return { success: false, error: error.message };
+        } finally {
+            if (registrationApp) {
+                try {
+                    await deleteApp(registrationApp);
+                } catch (error) {
+                    console.error('Could not close temporary Firebase registration app:', error);
+                }
+            }
         }
     }
 
@@ -84,6 +108,26 @@ class FirebaseService {
         }
     }
 
+    async sendPasswordReset(email) {
+        if (!this.isInitialized) {
+            return { success: false, error: 'Cloud password recovery is unavailable. Contact the app administrator.' };
+        }
+        try {
+            await sendPasswordResetEmail(this.auth, email);
+            return { success: true };
+        } catch (error) {
+            console.error('Error sending password reset email:', error);
+            if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-email') {
+                // Avoid revealing whether an account exists.
+                return { success: true };
+            }
+            if (error.code === 'auth/network-request-failed') {
+                return { success: false, error: 'Could not reach Firebase. Check your internet connection and try again.' };
+            }
+            return { success: false, error: 'Could not send the reset email. Check Firebase email/password settings and try again.' };
+        }
+    }
+
     // Firebase Authentication - Logout
     async logoutUser() {
         if (!this.isInitialized) {
@@ -99,9 +143,24 @@ class FirebaseService {
         }
     }
 
+    async changePassword(currentPassword, newPassword) {
+        const user = this.getCurrentUser();
+        if (!user) return { success: false, error: 'Sign in to your cloud account first' };
+
+        try {
+            const credential = EmailAuthProvider.credential(user.email, currentPassword);
+            await reauthenticateWithCredential(user, credential);
+            await updatePassword(user, newPassword);
+            return { success: true };
+        } catch (error) {
+            console.error('Error changing cloud account password:', error);
+            return { success: false, error: error.message };
+        }
+    }
+
     // Get current authenticated user
     getCurrentUser() {
-        return this.currentUser;
+        return this.auth?.currentUser || this.currentUser;
     }
 
     // Sync user data to Firestore
@@ -131,10 +190,10 @@ class FirebaseService {
 
         try {
             // Upload file to Storage
-            const uploadResult = await this.uploadFile(filePath, fileData.name, {
-                userId: fileData.userId,
-                folderId: fileData.folderId
-            });
+            const user = this.getCurrentUser();
+            if (!user) throw new Error('Sign in to your cloud account before backing up files');
+            const cloudId = fileData.cloudId || require('crypto').randomUUID();
+            const uploadResult = await this.uploadFile(filePath, cloudId, fileData.name);
 
             if (!uploadResult.success) {
                 return uploadResult;
@@ -142,15 +201,19 @@ class FirebaseService {
 
             // Save metadata to Firestore
             const firestoreData = {
-                ...fileData,
-                downloadURL: uploadResult.downloadURL,
-                firebasePath: uploadResult.fullPath,
-                lastSynced: new Date().toISOString()
+                name: fileData.name,
+                size: fileData.size,
+                uploadDate: fileData.uploadDate,
+                description: fileData.description || '',
+                tags: Array.isArray(fileData.tags)
+                    ? fileData.tags
+                    : (typeof fileData.tags === 'string' ? fileData.tags.split(',').map(tag => tag.trim()).filter(Boolean) : []),
+                fileType: fileData.fileType || this.getContentType(fileData.name),
+                storagePath: uploadResult.fullPath,
+                updatedAt: new Date().toISOString()
             };
-
-            const docId = await this.saveFileMetadata(firestoreData);
-
-            return { success: true, docId, downloadURL: uploadResult.downloadURL };
+            await setDoc(doc(this.db, 'users', user.uid, 'files', cloudId), firestoreData, { merge: true });
+            return { success: true, cloudId };
         } catch (error) {
             console.error('Error syncing file:', error);
             return { success: false, error: error.message };
@@ -158,13 +221,15 @@ class FirebaseService {
     }
 
     // Download file from Firebase Storage
-    async downloadFile(firebasePath, localPath) {
+    async downloadFile(cloudId, localPath) {
         if (!this.isInitialized || !this.syncEnabled) {
             return { success: false, error: 'Firebase not initialized or sync disabled' };
         }
 
         try {
-            const storageRef = ref(this.storage, firebasePath);
+            const user = this.getCurrentUser();
+            if (!user) throw new Error('Sign in to your cloud account before restoring files');
+            const storageRef = ref(this.storage, `users/${user.uid}/files/${cloudId}`);
             const fileBytes = await getBytes(storageRef);
             
             const fs = require('fs');
@@ -178,24 +243,22 @@ class FirebaseService {
     }
 
     // Get all synced files for a user
-    async getUserFiles(userId) {
+    async getUserFiles() {
         if (!this.isInitialized || !this.syncEnabled) {
             return { success: false, error: 'Firebase not initialized or sync disabled' };
         }
 
         try {
-            const q = query(
-                collection(this.db, 'files'),
-                where('userId', '==', userId),
-                orderBy('uploadDate', 'desc')
-            );
+            const user = this.getCurrentUser();
+            if (!user) throw new Error('Sign in to your cloud account before restoring files');
+            const q = query(collection(this.db, 'users', user.uid, 'files'), orderBy('uploadDate', 'desc'));
 
             const querySnapshot = await getDocs(q);
             const files = [];
 
             querySnapshot.forEach((doc) => {
                 files.push({
-                    id: doc.id,
+                    cloudId: doc.id,
                     ...doc.data()
                 });
             });
@@ -256,20 +319,16 @@ class FirebaseService {
     }
 
     // Delete synced file
-    async deleteSyncedFile(fileId, firebasePath) {
+    async deleteSyncedFile(cloudId) {
         if (!this.isInitialized || !this.syncEnabled) {
             return { success: false, error: 'Firebase not initialized or sync disabled' };
         }
 
         try {
-            // Delete from Storage
-            if (firebasePath) {
-                const storageRef = ref(this.storage, firebasePath);
-                await deleteObject(storageRef);
-            }
-
-            // Delete from Firestore
-            await deleteDoc(doc(this.db, 'files', fileId));
+            const user = this.getCurrentUser();
+            if (!user) throw new Error('Sign in to your cloud account before deleting backups');
+            await deleteObject(ref(this.storage, `users/${user.uid}/files/${cloudId}`));
+            await deleteDoc(doc(this.db, 'users', user.uid, 'files', cloudId));
 
             return { success: true };
         } catch (error) {
@@ -294,34 +353,42 @@ class FirebaseService {
     }
 
     // Upload file to Firebase Storage
-    async uploadFile(filePath, fileName, metadata = {}) {
+    async uploadFile(filePath, cloudId, displayName) {
         if (!this.isInitialized) {
             throw new Error('Firebase not initialized');
         }
 
         try {
             const fs = require('fs');
+            const user = this.getCurrentUser();
+            if (!user) throw new Error('Sign in to your cloud account before backing up files');
+            const fileSize = fs.statSync(filePath).size;
+            if (fileSize > 104857600) throw new Error('Cloud backup supports files up to 100 MB. The local file was kept.');
             const fileBuffer = fs.readFileSync(filePath);
-            
-            const storageRef = ref(this.storage, `documents/${fileName}`);
+
+            const storageRef = ref(this.storage, `users/${user.uid}/files/${cloudId}`);
             const snapshot = await uploadBytes(storageRef, fileBuffer, {
                 metadata: {
-                    contentType: this.getContentType(fileName),
-                    customMetadata: metadata
+                    contentType: this.getContentType(displayName),
+                    customMetadata: { originalName: displayName }
                 }
             });
-
-            const downloadURL = await getDownloadURL(snapshot.ref);
             
             return {
                 success: true,
-                downloadURL,
                 fileName: snapshot.metadata.name,
                 size: snapshot.metadata.size,
                 fullPath: snapshot.metadata.fullPath
             };
         } catch (error) {
             console.error('Error uploading file to Firebase:', error);
+            if (error?.status_ === 404 || error?.customData?.serverResponse?.includes?.('Bucket not found')) {
+                const bucket = this.app?.options?.storageBucket || '(not configured)';
+                throw new Error(`Firebase Storage could not find bucket "${bucket}". Create the Storage bucket in Firebase Console and set storageBucket to the exact bucket name shown in Project settings, then restart the app.`);
+            }
+            if (error?.code === 'storage/unknown' && !error?.customData?.serverResponse) {
+                throw new Error('Firebase Storage returned an empty error response. Check that the configured Storage bucket exists, then check your internet connection and DNS settings.');
+            }
             throw error;
         }
     }

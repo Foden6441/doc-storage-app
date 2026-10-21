@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Authentication
   registerUser: (username, email, password) => ipcRenderer.invoke('register-user', username, email, password),
   loginUser: (username, password) => ipcRenderer.invoke('login-user', username, password),
+  sendPasswordReset: (email) => ipcRenderer.invoke('send-password-reset', email),
   logoutUser: () => ipcRenderer.invoke('logout-user'),
   checkAuth: () => ipcRenderer.invoke('check-auth'),
   getCurrentUser: () => ipcRenderer.invoke('get-current-user'),
@@ -52,6 +53,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Admin Panel
   adminGetUsers: () => ipcRenderer.invoke('admin-get-users'),
+  adminCreateUser: (userData) => ipcRenderer.invoke('admin-create-user', userData),
   adminSetUserRole: (userId, role) => ipcRenderer.invoke('admin-set-user-role', userId, role),
   adminDeactivateUser: (userId) => ipcRenderer.invoke('admin-deactivate-user', userId),
   adminActivateUser: (userId) => ipcRenderer.invoke('admin-activate-user', userId),
@@ -64,6 +66,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   adminDeleteSystemSetting: (key) => ipcRenderer.invoke('admin-delete-system-setting', key),
   adminGetAdvancedStats: () => ipcRenderer.invoke('admin-get-advanced-stats'),
   adminUpdateUserSubscription: (userId, planId) => ipcRenderer.invoke('admin-update-user-subscription', userId, planId),
+  adminGetAllFiles: (userId) => ipcRenderer.invoke('admin-get-all-files', userId),
+  adminDeleteFile: (fileId) => ipcRenderer.invoke('admin-delete-file', fileId),
 
   // Subscription and Storage
   getUserStorageInfo: () => ipcRenderer.invoke('get-user-storage-info'),

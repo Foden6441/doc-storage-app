@@ -1,12 +1,30 @@
-const electron = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const Database = require('./database.js');
 const AuthService = require('./auth.js');
 const { initAppPaths, getDbPath, getUploadsDir } = require('./app-paths.js');
 const firebaseService = require('./firebase.js');
 
-const { app, BrowserWindow, ipcMain, dialog } = electron;
+// Handle different Electron loading scenarios
+let app, BrowserWindow, ipcMain, dialog;
+try {
+  // Try the standard way first
+  const electron = require('electron');
+  if (typeof electron === 'string') {
+    // Electron executable path returned, need to load differently
+    app = require('electron').app;
+    BrowserWindow = require('electron').BrowserWindow;
+    ipcMain = require('electron').ipcMain;
+    dialog = require('electron').dialog;
+  } else {
+    // Standard electron module
+    ({ app, BrowserWindow, ipcMain, dialog } = electron);
+  }
+} catch (e) {
+  console.error('Failed to load electron:', e);
+  process.exit(1);
+}
 
 let mainWindow;
 let db;
@@ -113,6 +131,104 @@ function formatBytes(bytes) {
   return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
 }
 
+function getCloudUser(localUser) {
+  const cloudUser = firebaseService.getCurrentUser();
+  if (!localUser?.firebaseUid || !cloudUser || cloudUser.uid !== localUser.firebaseUid) {
+    throw new Error('Sign in with your cloud account to use backup and restore.');
+  }
+  return cloudUser;
+}
+
+async function backUpLocalFile(localUser, file) {
+  getCloudUser(localUser);
+  if (!file.cloudId) {
+    const cloudId = crypto.randomUUID();
+    if (!db.setFileCloudId(localUser.id, file.id, cloudId)) {
+      throw new Error(`Could not prepare a cloud backup for ${file.name}`);
+    }
+    file.cloudId = cloudId;
+  }
+
+  return firebaseService.syncFile(file, file.storedPath);
+}
+
+async function restoreCloudBackup(localUser) {
+  try {
+    getCloudUser(localUser);
+    const result = await firebaseService.getUserFiles();
+    if (!result.success) return result;
+
+    const uploadsDir = getUploadsDir();
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    let restoredFiles = 0;
+    let failedFiles = 0;
+
+    for (const cloudFile of result.files) {
+      if (!cloudFile.cloudId || !validators.fileName(cloudFile.name)) {
+        failedFiles++;
+        continue;
+      }
+      if (db.findFileByCloudId(localUser.id, cloudFile.cloudId)) continue;
+
+      const localPath = path.join(uploadsDir, `${localUser.id}_${crypto.randomUUID()}_${cloudFile.name}`);
+      const download = await firebaseService.downloadFile(cloudFile.cloudId, localPath);
+      if (!download.success) {
+        failedFiles++;
+        continue;
+      }
+
+      db.saveFile({
+        userId: localUser.id,
+        cloudId: cloudFile.cloudId,
+        folderId: null,
+        name: cloudFile.name,
+        originalPath: '',
+        storedPath: localPath,
+        size: Number(cloudFile.size) || fs.statSync(localPath).size,
+        uploadDate: cloudFile.uploadDate || new Date().toISOString(),
+        description: cloudFile.description || '',
+        tags: cloudFile.tags || ''
+      });
+      restoredFiles++;
+    }
+
+    if (restoredFiles) db.updateUserStorageUsed(localUser.id);
+    return {
+      success: failedFiles === 0,
+      restoredFiles,
+      failedFiles,
+      error: failedFiles ? `Could not restore ${failedFiles} cloud file(s). Try Restore from Cloud again.` : undefined
+    };
+  } catch (error) {
+    console.error('Cloud restore failed:', error);
+    return { success: false, restoredFiles: 0, failedFiles: 0, error: error.message };
+  }
+}
+
+async function backUpAllLocalFiles(localUser) {
+  getCloudUser(localUser);
+  const files = db.getAllFiles(localUser.id);
+  let backedUpFiles = 0;
+  const failures = [];
+
+  for (const file of files) {
+    if (!file.storedPath || !fs.existsSync(file.storedPath)) {
+      failures.push(file.name);
+      continue;
+    }
+    try {
+      const backupResult = await backUpLocalFile(localUser, file);
+      if (!backupResult.success) throw new Error(backupResult.error || 'Cloud upload failed');
+      backedUpFiles++;
+    } catch (error) {
+      failures.push(file.name);
+      console.error(`Cloud backup failed for ${file.name}:`, error);
+    }
+  }
+
+  return { success: failures.length === 0, backedUpFiles, failedFiles: failures };
+}
+
 // Helper function to import folder recursively
 async function importFolderRecursively(folderPath, dbFolderId, userId) {
   const importedFiles = [];
@@ -160,6 +276,14 @@ async function importFolderRecursively(folderPath, dbFolderId, userId) {
           };
 
           const fileId = db.saveFile(fileData);
+          const activeUser = authService.getCurrentUser();
+          if (activeUser?.id === userId && activeUser.firebaseUid && firebaseService.isSyncEnabled()) {
+            try {
+              await backUpLocalFile(activeUser, db.getFileById(fileId));
+            } catch (backupError) {
+              console.error(`Cloud backup failed for imported file ${fileName}:`, backupError);
+            }
+          }
           importedFiles.push({
             id: fileId,
             name: fileName,
@@ -266,6 +390,7 @@ async function startApp() {
 
     // Enable Firebase sync by default
     firebaseService.setSyncEnabled(true);
+    authService.setFirebaseEnabled(true);
     console.log('Firebase sync enabled by default');
   } catch (error) {
     console.log('Firebase failed to initialize:', error.message);
@@ -354,18 +479,6 @@ ipcMain.handle('save-file', async (event, filePath, metadata) => {
       return { success: false, error: 'Invalid folder ID' };
     }
 
-    const uploadDir = getUploadsDir();
-    
-    // Create uploads directory if it doesn't exist
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    
-    const destinationPath = path.join(uploadDir, fileName);
-    
-    // Copy file to uploads directory
-    fs.copyFileSync(filePath, destinationPath);
-    
     // Save metadata to database
     const currentUser = authService.getCurrentUser();
     if (!currentUser) {
@@ -384,6 +497,11 @@ ipcMain.handle('save-file', async (event, filePath, metadata) => {
       };
     }
 
+    const uploadDir = getUploadsDir();
+    fs.mkdirSync(uploadDir, { recursive: true });
+    const destinationPath = path.join(uploadDir, `${currentUser.id}_${Date.now()}_${fileName}`);
+    fs.copyFileSync(filePath, destinationPath);
+
     const fileData = {
       userId: currentUser.id,
       folderId: metadata?.folderId || null,
@@ -397,6 +515,7 @@ ipcMain.handle('save-file', async (event, filePath, metadata) => {
     };
 
     const id = db.saveFile(fileData);
+    fileData.id = id;
 
     // Update user storage used
     db.updateUserStorageUsed(currentUser.id);
@@ -404,7 +523,16 @@ ipcMain.handle('save-file', async (event, filePath, metadata) => {
     // Log activity
     db.logActivity(currentUser.id, 'FILE_UPLOADED', `File uploaded: ${fileName}`);
 
-    return { success: true, id, fileData };
+    let cloudBackup = { success: false, skipped: true };
+    if (currentUser.firebaseUid && firebaseService.isSyncEnabled()) {
+      try {
+        cloudBackup = await backUpLocalFile(currentUser, { ...fileData, id, cloudId: fileData.cloudId });
+      } catch (cloudError) {
+        cloudBackup = { success: false, error: cloudError.message };
+      }
+    }
+
+    return { success: true, id, fileData, cloudBackup };
   } catch (error) {
     console.error('Error saving file:', error);
     return { success: false, error: error.message };
@@ -454,6 +582,13 @@ ipcMain.handle('delete-file', async (event, fileId) => {
     const currentUser = authService.getCurrentUser();
     const file = db.getFileById(fileId);
 
+    if (!currentUser) {
+      return { success: false, error: 'User not authenticated' };
+    }
+    if (!file || file.user_id !== currentUser.id) {
+      return { success: false, error: 'File not found' };
+    }
+
     const deleted = deleteStoredFile(fileId);
     if (deleted) {
       // Log activity
@@ -477,12 +612,21 @@ ipcMain.handle('delete-files', async (event, fileIds) => {
     }
 
     const ids = fileIds;
+    const currentUser = authService.getCurrentUser();
+    if (!currentUser) {
+      return { success: false, error: 'User not authenticated', deleted: 0, failed: ids.length };
+    }
     let deleted = 0;
     let failed = 0;
 
     for (const fileId of ids) {
       try {
         if (!validators.fileId(fileId)) {
+          failed++;
+          continue;
+        }
+        const file = db.getFileById(fileId);
+        if (!file || file.user_id !== currentUser.id) {
           failed++;
           continue;
         }
@@ -515,7 +659,11 @@ ipcMain.handle('open-file', async (event, fileId) => {
       return { success: false, error: 'Invalid file ID' };
     }
 
+    const currentUser = authService.getCurrentUser();
     const file = db.getFileById(fileId);
+    if (!currentUser || !file || file.user_id !== currentUser.id) {
+      return { success: false, error: 'File not found' };
+    }
     if (file && fs.existsSync(file.storedPath)) {
       const { shell } = require('electron');
       shell.openPath(file.storedPath);
@@ -531,6 +679,9 @@ ipcMain.handle('open-file', async (event, fileId) => {
 // Authentication IPC handlers
 ipcMain.handle('register-user', async (event, username, email, password) => {
   try {
+    if (!firebaseService.isReady()) {
+      return { success: false, error: 'Cloud accounts are unavailable until Firebase is configured. No local-only account was created.' };
+    }
     // Server-side validation
     if (!validators.username(username)) {
       return { success: false, error: 'Invalid username' };
@@ -565,6 +716,16 @@ ipcMain.handle('login-user', async (event, username, password) => {
     }
 
     const result = await authService.loginUser(sanitize.string(username), password);
+    if (result.success && result.user?.firebaseUid && firebaseService.isSyncEnabled()) {
+      result.backupRestore = await restoreCloudBackup(result.user);
+      if (result.backupRestore.success && result.backupRestore.restoredFiles > 0) {
+        result.message = `Signed in. Restored ${result.backupRestore.restoredFiles} files from your cloud backup.`;
+      } else if (!result.backupRestore.success) {
+        result.message = `Signed in, but cloud restore failed: ${result.backupRestore.error}`;
+      }
+    } else if (result.success && !result.user?.firebaseUid) {
+      result.message = 'Signed in on this computer. This local account is not connected to cloud backup.';
+    }
     return result;
   } catch (error) {
     console.error('Error logging in user:', error);
@@ -576,11 +737,25 @@ ipcMain.handle('login-user', async (event, username, password) => {
   }
 });
 
+ipcMain.handle('send-password-reset', async (event, email) => {
+  try {
+    if (typeof email !== 'string' || !validators.email(email.trim())) {
+      return { success: false, error: 'Enter a valid email address first.' };
+    }
+    return await firebaseService.sendPasswordReset(email.trim());
+  } catch (error) {
+    console.error('Error requesting password reset:', error);
+    return { success: false, error: 'Could not send the reset email. Please try again.' };
+  }
+});
+
 ipcMain.handle('logout-user', async (event) => {
   try {
     const currentUser = authService.getCurrentUser();
     if (currentUser) {
-      return await authService.logoutUser(currentUser.sessionToken);
+      const result = await authService.logoutUser(currentUser.sessionToken);
+      if (firebaseService.getCurrentUser()) await firebaseService.logoutUser();
+      return result;
     }
     return { success: true, message: 'Already logged out' };
   } catch (error) {
@@ -600,7 +775,11 @@ ipcMain.handle('check-auth', async (event) => {
 
 ipcMain.handle('get-current-user', async (event) => {
   try {
-    return authService.getCurrentUser();
+    const currentUser = authService.getCurrentUser();
+    if (currentUser?.firebaseUid && firebaseService.isSyncEnabled()) {
+      await restoreCloudBackup(currentUser);
+    }
+    return currentUser;
   } catch (error) {
     console.error('Error getting current user:', error);
     return null;
@@ -620,6 +799,18 @@ ipcMain.handle('change-password', async (event, currentPassword, newPassword) =>
     const currentUser = authService.getCurrentUser();
     if (!currentUser) {
       return { success: false, error: 'Not authenticated' };
+    }
+
+    if (currentUser.firebaseUid) {
+      try {
+        getCloudUser(currentUser);
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+      const changed = await firebaseService.changePassword(currentPassword, newPassword);
+      if (!changed.success) return changed;
+      authService.updatePasswordHash(currentUser.id, newPassword);
+      return { success: true, message: 'Cloud account password changed successfully' };
     }
     return await authService.changePassword(currentUser.id, currentPassword, newPassword);
   } catch (error) {
@@ -668,17 +859,17 @@ ipcMain.handle('get-session-info', async () => {
       return { success: false, error: 'Not authenticated' };
     }
 
-    const session = authService.getSessionDetails(currentUser.sessionToken);
-    if (!session) {
-      return { success: false, error: 'Session not found' };
-    }
-
     return {
       success: true,
       session: {
-        ...session,
+        userId: currentUser.id,
         username: currentUser.username,
-        email: currentUser.email
+        email: currentUser.email,
+        role: currentUser.role,
+        sessionToken: currentUser.sessionToken,
+        isActive: true,
+        createdAt: currentUser.created_at || new Date().toISOString(),
+        expiresAt: null
       }
     };
   } catch (error) {
@@ -1152,6 +1343,8 @@ ipcMain.handle('save-firebase-config', async (event, config) => {
 
     // Initialize Firebase with config
     firebaseService.initialize(finalConfig);
+    firebaseService.setSyncEnabled(true);
+    authService.setFirebaseEnabled(true);
 
     return { success: true };
   } catch (error) {
@@ -1214,32 +1407,7 @@ ipcMain.handle('sync-to-cloud', async (event) => {
     if (!currentUser) {
       return { success: false, error: 'Not authenticated' };
     }
-
-    // Sync user data
-    await firebaseService.syncUserData(currentUser.id.toString(), {
-      username: currentUser.username,
-      email: currentUser.email,
-      createdAt: currentUser.createdAt
-    });
-
-    // Sync all files
-    const files = db.getAllFiles(currentUser.id);
-    const uploadsDir = getUploadsDir();
-    
-    for (const file of files) {
-      const filePath = path.join(uploadsDir, path.basename(file.storedPath));
-      if (fs.existsSync(filePath)) {
-        await firebaseService.syncFile(file, filePath);
-      }
-    }
-
-    // Sync all folders
-    const folders = db.getAllFolders(currentUser.id);
-    for (const folder of folders) {
-      await firebaseService.syncFolder(folder);
-    }
-
-    return { success: true, syncedFiles: files.length, syncedFolders: folders.length };
+    return await backUpAllLocalFiles(currentUser);
   } catch (error) {
     console.error('Error syncing to cloud:', error);
     return { success: false, error: error.message };
@@ -1247,70 +1415,9 @@ ipcMain.handle('sync-to-cloud', async (event) => {
 });
 
 ipcMain.handle('sync-from-cloud', async (event) => {
-  try {
-    const currentUser = authService.getCurrentUser();
-    if (!currentUser) {
-      return { success: false, error: 'Not authenticated' };
-    }
-
-    // Get synced files from Firebase
-    const filesResult = await firebaseService.getUserFiles(currentUser.id.toString());
-    if (!filesResult.success) {
-      return filesResult;
-    }
-
-    const uploadsDir = getUploadsDir();
-    if (!fs.existsSync(uploadsDir)) {
-      fs.mkdirSync(uploadsDir, { recursive: true });
-    }
-
-    let downloadedCount = 0;
-    for (const file of filesResult.files) {
-      // Check if file already exists locally
-      const existingFile = db.getFileById(file.id);
-      if (!existingFile) {
-        // Download file from Firebase
-        const localPath = path.join(uploadsDir, file.name);
-        const downloadResult = await firebaseService.downloadFile(file.firebasePath, localPath);
-        
-        if (downloadResult.success) {
-          // Save to local database
-          db.saveFile({
-            userId: currentUser.id,
-            folderId: file.folderId,
-            name: file.name,
-            originalPath: file.originalPath,
-            storedPath: localPath,
-            size: file.size,
-            uploadDate: file.uploadDate,
-            description: file.description,
-            tags: file.tags
-          });
-          downloadedCount++;
-        }
-      }
-    }
-
-    // Get synced folders from Firebase
-    const foldersResult = await firebaseService.getUserFolders(currentUser.id.toString());
-    if (foldersResult.success) {
-      for (const folder of foldersResult.folders) {
-        const existingFolder = db.getFolderById(folder.id);
-        if (!existingFolder) {
-          db.createFolder(currentUser.id, {
-            name: folder.name,
-            description: folder.description,
-            color: folder.color
-          });
-        }
-      }
-    }
-
-    return { success: true, downloadedFiles: downloadedCount };
-  } catch (error) {
-    console.error('Error syncing from cloud:', error);
-    return { success: false, error: error.message };
-  }
+  const currentUser = authService.getCurrentUser();
+  if (!currentUser) return { success: false, error: 'Not authenticated' };
+  return restoreCloudBackup(currentUser);
 });
 
 // Admin Panel IPC handlers
@@ -1325,6 +1432,50 @@ ipcMain.handle('admin-get-users', async () => {
     return result;
   } catch (error) {
     console.error('Error getting users:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('admin-create-user', async (event, userData) => {
+  try {
+    const currentUser = authService.getCurrentUser();
+    if (!currentUser || currentUser.role !== 'admin') {
+      return { success: false, error: 'Access denied. Admin only.' };
+    }
+
+    // Validate required fields
+    if (!userData.username || !userData.email || !userData.password) {
+      return { success: false, error: 'Username, email, and password are required' };
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(userData.email)) {
+      return { success: false, error: 'Invalid email format' };
+    }
+
+    // Validate password length
+    if (userData.password.length < 6) {
+      return { success: false, error: 'Password must be at least 6 characters' };
+    }
+
+    // Check if username or email already exists
+    const existingUser = db.db.prepare('SELECT id FROM users WHERE username = ? OR email = ?').get(userData.username, userData.email);
+    if (existingUser) {
+      return { success: false, error: 'Username or email already exists' };
+    }
+
+    // Create user using auth service with specified role
+    const result = await authService.registerUser(userData.username, userData.email, userData.password, userData.role);
+    
+    if (result.success) {
+      db.logActivity(currentUser.id, 'ADMIN_USER_CREATED', `Created user: ${userData.username} with role: ${userData.role}`);
+      return { success: true, user: result.user };
+    } else {
+      return { success: false, error: result.error || 'Failed to create user' };
+    }
+  } catch (error) {
+    console.error('Error creating user:', error);
     return { success: false, error: error.message };
   }
 });
@@ -1620,6 +1771,69 @@ ipcMain.handle('admin-update-user-subscription', async (event, userId, planId) =
     return { success: false, error: 'Failed to update user subscription' };
   } catch (error) {
     console.error('Error updating user subscription:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Admin file management IPC handlers
+ipcMain.handle('admin-get-all-files', async (event, userId = null) => {
+  try {
+    const currentUser = authService.getCurrentUser();
+    if (!currentUser || currentUser.role !== 'admin') {
+      return { success: false, error: 'Access denied. Admin only.' };
+    }
+
+    let files;
+    if (userId) {
+      // Get files for specific user
+      files = db.getAllFiles(userId);
+    } else {
+      // Get all files across all users
+      files = db.db.prepare(`
+        SELECT f.*, u.username, u.email, fl.name as folder_name, fl.color as folder_color
+        FROM files f
+        LEFT JOIN users u ON f.user_id = u.id
+        LEFT JOIN folders fl ON f.folder_id = fl.id
+        ORDER BY f.upload_date DESC
+      `).all();
+    }
+
+    return { success: true, files };
+  } catch (error) {
+    console.error('Error getting all files:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('admin-delete-file', async (event, fileId) => {
+  try {
+    const currentUser = authService.getCurrentUser();
+    if (!currentUser || currentUser.role !== 'admin') {
+      return { success: false, error: 'Access denied. Admin only.' };
+    }
+
+    const file = db.getFileById(fileId);
+    if (!file) {
+      return { success: false, error: 'File not found' };
+    }
+
+    // Delete physical file if it exists
+    if (file.stored_path && fs.existsSync(file.stored_path)) {
+      fs.unlinkSync(file.stored_path);
+    }
+
+    // Delete from database
+    db.deleteFile(fileId);
+
+    // Update user storage
+    if (file.user_id) {
+      db.updateUserStorageUsed(file.user_id);
+    }
+
+    db.logActivity(currentUser.id, 'ADMIN_FILE_DELETED', `Deleted file: ${file.name} (User: ${file.user_id})`);
+    return { success: true };
+  } catch (error) {
+    console.error('Error deleting file:', error);
     return { success: false, error: error.message };
   }
 });

@@ -9,7 +9,7 @@ class AuthService {
         this.dbPath = dbPath;
         this.currentUser = null;
         this.fileDatabase = fileDatabase;
-        this.useFirebase = true; // Use Firebase for authentication
+        this.useFirebase = false; // Disable Firebase due to network issues
     }
 
     init() {
@@ -49,11 +49,21 @@ class AuthService {
     }
 
     // User registration
-    async registerUser(username, email, password) {
+    async registerUser(username, email, password, role = 'user') {
         try {
             if (this.useFirebase) {
                 // Try Firebase registration first
                 try {
+                    const localAccount = this.db.prepare(`
+                        SELECT id, password_hash, salt, firebase_uid FROM users WHERE email = ?
+                    `).get(email);
+                    if (localAccount && !localAccount.firebase_uid) {
+                        if (!localAccount.password_hash || !localAccount.salt ||
+                            this.hashPassword(password, localAccount.salt) !== localAccount.password_hash) {
+                            return { success: false, error: 'To connect this existing local account, use its current local password.' };
+                        }
+                    }
+
                     const firebaseResult = await firebaseService.registerUser(email, password, username);
                     if (firebaseResult.success) {
                         const firebaseUser = firebaseResult.user;
@@ -61,14 +71,15 @@ class AuthService {
 
                         // Check if user already exists in local database
                         const existingUser = this.db.prepare(`
-                            SELECT id, role FROM users WHERE firebase_uid = ? OR email = ?
+                            SELECT id, role, firebase_uid, password_hash, salt FROM users WHERE firebase_uid = ? OR email = ?
                         `).get(firebaseUid, email);
 
                         if (existingUser) {
-                            // Update existing user, preserving role
+                            // Update existing user, preserving role unless explicitly set
+                            const userRole = role === 'user' ? existingUser.role : role;
                             this.db.prepare(`
-                                UPDATE users SET username = ?, email = ?, firebase_uid = ? WHERE id = ?
-                            `).run(username, email, firebaseUid, existingUser.id);
+                                UPDATE users SET username = ?, email = ?, firebase_uid = ?, role = ? WHERE id = ?
+                            `).run(username, email, firebaseUid, userRole, existingUser.id);
 
                             // Log activity
                             if (this.fileDatabase) {
@@ -83,18 +94,18 @@ class AuthService {
                             };
                         }
 
-                        // Create new user in local database
+                        // Create new user in local database with specified role
                         try {
                             const insertStmt = this.db.prepare(`
                                 INSERT INTO users (username, email, firebase_uid, role, is_active)
-                                VALUES (?, ?, ?, 'user', 1)
+                                VALUES (?, ?, ?, ?, 1)
                             `);
 
-                            const result = insertStmt.run(username, email, firebaseUid);
+                            const result = insertStmt.run(username, email, firebaseUid, role);
 
                             // Log activity
                             if (this.fileDatabase) {
-                                this.fileDatabase.logActivity(result.lastInsertRowid, 'USER_REGISTERED', `New user registered with Firebase: ${username}`);
+                                this.fileDatabase.logActivity(result.lastInsertRowid, 'USER_REGISTERED', `New user registered with Firebase: ${username} as ${role}`);
                             }
 
                             return {
@@ -116,8 +127,8 @@ class AuthService {
                                 if (localUser && !localUser.firebase_uid) {
                                     // Update existing local user with Firebase UID
                                     this.db.prepare(`
-                                        UPDATE users SET firebase_uid = ?, username = ? WHERE id = ?
-                                    `).run(firebaseUid, username, localUser.id);
+                                        UPDATE users SET firebase_uid = ?, username = ?, role = ? WHERE id = ?
+                                    `).run(firebaseUid, username, role, localUser.id);
 
                                     if (this.fileDatabase) {
                                         this.fileDatabase.logActivity(localUser.id, 'USER_REGISTERED', `User linked to Firebase: ${username}`);
@@ -134,13 +145,19 @@ class AuthService {
                             return { success: false, error: 'Failed to create local user record' };
                         }
                     }
+                    if (this.useFirebase) {
+                        return { success: false, error: 'Cloud account registration failed. Check your email and Firebase setup, then try again.' };
+                    }
                 } catch (firebaseError) {
                     // Firebase registration failed, fall back to SQLite
                     console.log('Firebase registration failed, trying SQLite fallback:', firebaseError.message);
+                    if (this.useFirebase) {
+                        return { success: false, error: 'Cloud account registration failed. Check your internet connection and Firebase setup, then try again.' };
+                    }
                 }
             }
 
-            // Local SQLite registration (fallback)
+            // Local SQLite registration (fallback or when Firebase is disabled)
             const existingUser = this.db.prepare(`
                 SELECT id FROM users WHERE username = ? OR email = ?
             `).get(username, email);
@@ -154,13 +171,13 @@ class AuthService {
 
             const insertStmt = this.db.prepare(`
                 INSERT INTO users (username, email, password_hash, salt, role, is_active)
-                VALUES (?, ?, ?, ?, 'user', 1)
+                VALUES (?, ?, ?, ?, ?, 1)
             `);
 
-            const result = insertStmt.run(username, email, passwordHash, salt);
+            const result = insertStmt.run(username, email, passwordHash, salt, role);
 
             if (this.fileDatabase) {
-                this.fileDatabase.logActivity(result.lastInsertRowid, 'USER_REGISTERED', `New user registered: ${username}`);
+                this.fileDatabase.logActivity(result.lastInsertRowid, 'USER_REGISTERED', `New user registered: ${username} as ${role}`);
             }
 
             return {
@@ -213,11 +230,15 @@ class AuthService {
                             // User authenticated in Firebase but not in local database
                             // Check if user exists by email (existing SQLite user)
                             const existingUser = this.db.prepare(`
-                                SELECT id, username, email, is_active, role
+                                SELECT id, username, email, is_active, role, firebase_uid, password_hash, salt
                                 FROM users WHERE email = ?
                             `).get(firebaseUser.email);
 
                             if (existingUser) {
+                                if (!existingUser.firebase_uid && existingUser.password_hash &&
+                                    this.hashPassword(password, existingUser.salt) !== existingUser.password_hash) {
+                                    return { success: false, error: 'This local account must be linked using its current local password.' };
+                                }
                                 // Update existing user with Firebase UID, preserving role
                                 this.db.prepare(`
                                     UPDATE users SET firebase_uid = ?, username = ? WHERE id = ?
@@ -243,6 +264,9 @@ class AuthService {
                             return { success: false, error: 'Account is deactivated' };
                         }
 
+                        // Ensure role is set (default to 'user' if null)
+                        const userRole = user.role || 'user';
+
                         // Generate session token
                         const sessionToken = this.generateSessionToken();
                         const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
@@ -264,7 +288,7 @@ class AuthService {
                             id: user.id,
                             username: user.username,
                             email: user.email,
-                            role: user.role || 'user',
+                            role: userRole,
                             firebaseUid: firebaseUid,
                             sessionToken: sessionToken
                         };
@@ -280,16 +304,42 @@ class AuthService {
                             message: 'Login successful'
                         };
                     }
+
+                    // Keep local-only accounts usable offline, but do not hide
+                    // Firebase failures for cloud-only accounts as "Invalid credentials".
+                    const localAccount = this.db.prepare(`
+                        SELECT password_hash, salt FROM users WHERE username = ? OR email = ?
+                    `).get(username, username);
+                    if (!localAccount?.password_hash || !localAccount?.salt) {
+                        const code = firebaseResult.error?.match(/auth\/[a-z-]+/)?.[0];
+                        const errorMessage = code === 'auth/network-request-failed'
+                            ? 'Could not connect to Firebase. Check your internet connection and try again.'
+                            : code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found'
+                                ? 'Invalid email or password.'
+                                : 'Cloud sign-in failed. Check your Firebase setup and try again.';
+                        return { success: false, error: errorMessage };
+                    }
                 } catch (firebaseError) {
-                    // Firebase login failed, fall back to SQLite silently
-                    console.log('Firebase login failed, trying SQLite fallback:', firebaseError.message);
-                    // Don't throw the error, just continue to SQLite fallback
+                    // Network failures may fall back only for accounts with a local password.
+                    console.log('Firebase login failed; checking for a local account:', firebaseError.message);
+                    const localAccount = this.db.prepare(`
+                        SELECT password_hash, salt FROM users WHERE username = ? OR email = ?
+                    `).get(username, username);
+                    if (!localAccount?.password_hash || !localAccount?.salt) {
+                        const code = firebaseError.code;
+                        return {
+                            success: false,
+                            error: code === 'auth/network-request-failed'
+                                ? 'Could not connect to Firebase. Check your internet connection and try again.'
+                                : 'Cloud sign-in failed. Check your Firebase setup and try again.'
+                        };
+                    }
                 }
             }
 
             // Local SQLite login (fallback for existing users)
             const user = this.db.prepare(`
-                SELECT id, username, email, password_hash, salt, is_active, role
+                SELECT id, username, email, password_hash, salt, is_active, role, firebase_uid
                 FROM users WHERE username = ? OR email = ?
             `).get(username, username);
 
@@ -301,9 +351,14 @@ class AuthService {
                 return { success: false, error: 'Account is deactivated' };
             }
 
+            // Ensure role is set (default to 'user' if null)
+            const userRole = user.role || 'user';
+
             // Check if user has password hash (SQLite user)
+            // If user has firebase_uid but no password_hash, they need to use Firebase
             if (!user.password_hash || !user.salt) {
-                return { success: false, error: 'Please register with Firebase to create an account' };
+                // User was created via Firebase, cannot use SQLite fallback
+                return { success: false, error: 'Invalid credentials' };
             }
 
             const passwordHash = this.hashPassword(password, user.salt);
@@ -328,7 +383,8 @@ class AuthService {
                 id: user.id,
                 username: user.username,
                 email: user.email,
-                role: user.role || 'user',
+                role: userRole,
+                firebaseUid: user.firebase_uid || null,
                 sessionToken: sessionToken
             };
 
@@ -351,7 +407,7 @@ class AuthService {
     async verifySession(sessionToken) {
         try {
             const session = this.db.prepare(`
-                SELECT s.session_token, s.expires_at, u.id, u.username, u.email, u.role
+                SELECT s.session_token, s.expires_at, u.id, u.username, u.email, u.role, u.firebase_uid
                 FROM sessions s
                 JOIN users u ON s.user_id = u.id
                 WHERE s.session_token = ? AND s.expires_at > datetime('now')
@@ -361,11 +417,15 @@ class AuthService {
                 return { success: false, error: 'Invalid or expired session' };
             }
 
+            // Ensure role is set (default to 'user' if null)
+            const userRole = session.role || 'user';
+
             this.currentUser = {
                 id: session.id,
                 username: session.username,
                 email: session.email,
-                role: session.role || 'user',
+                role: userRole,
+                firebaseUid: session.firebase_uid || null,
                 sessionToken: session.session_token
             };
 
@@ -471,6 +531,18 @@ class AuthService {
         } catch (error) {
             console.error('Error changing password:', error);
             return { success: false, error: 'Password change failed' };
+        }
+    }
+
+    updatePasswordHash(userId, newPassword) {
+        try {
+            const salt = this.generateSalt();
+            const passwordHash = this.hashPassword(newPassword, salt);
+            return this.db.prepare('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?')
+                .run(passwordHash, salt, userId).changes > 0;
+        } catch (error) {
+            console.error('Error updating local password hash:', error);
+            return false;
         }
     }
 

@@ -1,5 +1,21 @@
 # Firebase Cloud Sync Setup Guide
 
+## Current cloud backup setup
+
+New app accounts use Firebase Email/Password authentication. A successful file upload is stored locally first, then backed up to the signed-in user's private Cloud Storage path. Signing in on another computer restores files into that computer's local database and uploads folder. Cloud backup applies to files; folder organization is not restored yet. Files larger than 100 MB are blocked by the included Storage rules. Deleting a local file does not delete its cloud backup, so a later restore can bring it back.
+
+Before using cloud accounts:
+
+1. In Firebase Console, enable **Authentication → Email/Password**.
+2. Create **Cloud Firestore** and **Cloud Storage** for the project.
+3. Publish the rules in this repository: paste `firestore.rules` into Firestore's Rules tab and `storage.rules` into Storage's Rules tab. Do not leave the database or bucket in test mode or use public read/write rules.
+4. Put your Firebase web app configuration in `DEFAULT_FIREBASE_CONFIG` in `main.js`, or configure it in the app if Firebase could not initialize. The current default points to `doc-storage-app-b2cb1`; replace it if that is not your project.
+5. Alternatively, from a terminal with the Firebase CLI logged into your project, run `firebase deploy --only firestore:rules,storage` from this project directory.
+
+New signups require Firebase to be reachable. Existing local-only accounts can still sign in on their original computer, but they do not have cross-computer backups until linked to a Firebase account. Always wait for the app to report that the backup completed before relying on a file being recoverable.
+
+**Billing:** Cloud Storage for Firebase requires the pay-as-you-go Blaze plan, which links a billing account. Some usage may fall within no-cost quotas, but usage beyond them can incur charges. Check the [current Firebase pricing](https://firebase.google.com/pricing) and [Storage billing requirements](https://firebase.google.com/docs/storage/faqs-storage-changes-announced-sept-2024) before enabling it. The app's 100 MB per-file rule is a safety cap, not a billing cap.
+
 This guide will help you set up Firebase cloud sync for the Document Storage App, allowing you to access your documents from any device even if your computer is lost or damaged.
 
 ## What is Firebase Cloud Sync?
@@ -39,14 +55,14 @@ Firebase Cloud Sync enables you to:
 1. Go to **"Build"** → **"Firestore Database"**
 2. Click **"Create database"**
 3. Select a location (choose one closest to you)
-4. Choose **"Start in Test Mode"** (for development)
+4. Choose **production mode**; the repository's `firestore.rules` file will define per-user access.
 5. Click **"Enable"**
 
 ### 4. Enable Cloud Storage
 
 1. Go to **"Build"** → **"Storage"**
 2. Click **"Get Started"**
-3. Accept the default rules (for development)
+3. Create the bucket, then publish the repository's `storage.rules` file so each account can access only its own files.
 4. Click **"Done"**
 
 ### 5. Get Firebase Configuration
@@ -72,42 +88,27 @@ const firebaseConfig = {
 
 ### 6. Configure the App
 
-1. Open the Document Storage App
-2. Click **"More Options"** in the sidebar
-3. Go to **"Settings"** tab
-4. Scroll down to **"Cloud Sync"** section
-5. Check **"Enable Cloud Sync"**
-6. Fill in the Firebase configuration fields:
+1. Set `DEFAULT_FIREBASE_CONFIG` in `main.js` to the Firebase web app configuration:
    - **API Key**: Paste the `apiKey` value
    - **Project ID**: Paste the `projectId` value
    - **Auth Domain**: Paste the `authDomain` value
    - **Storage Bucket**: Paste the `storageBucket` value
    - **App ID**: Paste the `appId` value
-7. Click **"Save Firebase Config"**
+2. Restart the app after changing the configuration.
 
 ### 7. Create Firebase Account
 
-1. After saving the config, you'll see login fields
-2. Enter your email and password
-3. Click **"Register"** to create a new Firebase account
-4. Or click **"Login"** if you already have one
-5. You'll see a success message when logged in
+Create an account in the app with an email address and password. On other computers, sign in using that same email and password. Usernames are only available on computers whose local database already knows the username.
 
 ### 8. Sync Your Data
 
-1. Once logged in, click **"Sync to Cloud"** button
-2. Wait for the sync to complete (shows number of files synced)
-3. Your documents are now backed up to Firebase!
+New uploads are backed up automatically when cloud sync is enabled. Use **Back Up Now** in Settings to back up existing local files; wait for the completion status.
 
 ## How to Restore Data on a New Device
 
-1. Install the Document Storage App on your new device
-2. Create a local account (this will be your local database)
-3. Go to **Settings** → **Cloud Sync**
-4. Enable Cloud Sync and enter your Firebase configuration
-5. Login with your Firebase account
-6. Click **"Sync from Cloud"** button
-7. Your documents will be downloaded to the new device
+1. Install the app and configure the same Firebase project.
+2. Sign in from the app's login screen with the same email and password.
+3. The app restores backed-up files after sign-in. You can also use **Restore from Cloud** in Settings.
 
 ## Important Notes
 
@@ -117,11 +118,9 @@ const firebaseConfig = {
 - Use a strong password for your Firebase account
 
 ### Storage Limits
-- Firebase Free Tier:
-  - **Storage**: 5 GB
-  - **Database**: 50 GB/month
-  - **Download**: 10 GB/month
-- For larger storage needs, consider upgrading to a paid Firebase plan
+- Cloud Storage requires the Blaze billing plan. Exact costs and any no-cost usage depend on the bucket region and current Google Cloud Storage pricing.
+- Set a billing budget and monitor usage in Google Cloud Console.
+- The app blocks individual cloud backups over 100 MB; this does not limit total storage or transfer costs.
 
 ### Best Practices
 - **Sync regularly** after adding important documents
@@ -155,37 +154,7 @@ const firebaseConfig = {
 
 ## Firebase Security Rules (Advanced)
 
-For production use, update your Firebase Security Rules in the Console:
-
-**Firestore Rules:**
-```javascript
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-    }
-    match /files/{fileId} {
-      allow read, write: if request.auth != null && resource.data.userId == request.auth.uid;
-    }
-    match /folders/{folderId} {
-      allow read, write: if request.auth != null && resource.data.userId == request.auth.uid;
-    }
-  }
-}
-```
-
-**Storage Rules:**
-```javascript
-rules_version = '2';
-service firebase.storage {
-  match /b/{bucket}/o {
-    match /documents/{allPaths=**} {
-      allow read, write: if request.auth != null;
-    }
-  }
-}
-```
+Use the checked-in [firestore.rules](firestore.rules) and [storage.rules](storage.rules). The older broad `/documents/**` example is unsafe and is not compatible with this app's user-scoped paths.
 
 ## Support
 
@@ -197,11 +166,7 @@ If you encounter issues:
 
 ## Cost Considerations
 
-Firebase offers a generous free tier suitable for personal use:
-- **Free tier**: 5 GB storage, 50 GB/month database reads/writes
-- **Paid plans**: Start at $25/month for Blaze plan with pay-as-you-go pricing
-
-For most personal document storage needs, the free tier is sufficient.
+Cloud Storage for Firebase requires the Blaze pay-as-you-go plan. Review the current [Firebase pricing](https://firebase.google.com/pricing) and configure a billing budget before enabling cloud backup. Cost depends on storage region, stored data, and downloads.
 
 ---
 

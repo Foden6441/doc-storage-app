@@ -170,6 +170,15 @@ class FileDatabase {
 
                     console.log('Migration 6: Password columns made nullable');
                 }
+            },
+            {
+                version: 7,
+                name: 'add_cloud_file_ids',
+                up: () => {
+                    this.db.exec('ALTER TABLE files ADD COLUMN cloud_id TEXT');
+                    this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_files_cloud_id ON files(cloud_id) WHERE cloud_id IS NOT NULL');
+                    console.log('Migration 7: Cloud backup IDs added to files');
+                }
             }
         ];
 
@@ -479,8 +488,8 @@ class FileDatabase {
         this.ensureConnection();
         
         const insertStmt = this.db.prepare(`
-            INSERT INTO files (user_id, folder_id, name, original_path, stored_path, size, upload_date, description, tags, file_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO files (user_id, folder_id, name, original_path, stored_path, size, upload_date, description, tags, file_type, cloud_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         try {
@@ -497,7 +506,8 @@ class FileDatabase {
                 fileData.uploadDate,
                 fileData.description || '',
                 tags,
-                fileType
+                fileType,
+                fileData.cloudId || null
             );
 
             return result.lastInsertRowid;
@@ -537,6 +547,7 @@ class FileDatabase {
             const files = selectStmt.all(...params);
             return files.map(file => ({
                 id: file.id,
+                cloudId: file.cloud_id,
                 name: file.name,
                 originalPath: file.original_path,
                 storedPath: file.stored_path,
@@ -572,6 +583,9 @@ class FileDatabase {
             if (file) {
                 return {
                     id: file.id,
+                    user_id: file.user_id,
+                    userId: file.user_id,
+                    cloudId: file.cloud_id,
                     name: file.name,
                     originalPath: file.original_path,
                     storedPath: file.stored_path,
@@ -639,6 +653,19 @@ class FileDatabase {
             console.error('Error deleting file:', error);
             return false;
         }
+    }
+
+    findFileByCloudId(userId, cloudId) {
+        this.ensureConnection();
+        const file = this.db.prepare('SELECT id FROM files WHERE user_id = ? AND cloud_id = ?').get(userId, cloudId);
+        return file ? this.getFileById(file.id) : null;
+    }
+
+    setFileCloudId(userId, fileId, cloudId) {
+        this.ensureConnection();
+        const result = this.db.prepare('UPDATE files SET cloud_id = ? WHERE id = ? AND user_id = ? AND (cloud_id IS NULL OR cloud_id = ?)')
+            .run(cloudId, fileId, userId, cloudId);
+        return result.changes > 0;
     }
 
     searchFiles(query, userId, options = {}) {

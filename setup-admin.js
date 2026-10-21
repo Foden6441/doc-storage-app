@@ -37,20 +37,20 @@ try {
     // If there's already an admin
     const existingAdmin = users.find(u => u.role === 'admin');
     if (existingAdmin) {
-        console.log(`\nAdmin already exists: ${existingAdmin.username} (ID: ${existingAdmin.id})`);
-        console.log('You can login with this account to access the Admin panel.');
+        console.log(`\nSuper Admin already exists: ${existingAdmin.username} (ID: ${existingAdmin.id})`);
+        console.log('You can login with this account to access the Super Admin side.');
         process.exit(0);
     }
     
-    // Promote the first user to admin
+    // Promote the first user to Super Admin
     const firstUser = users[0];
-    console.log(`\n=== Promoting ${firstUser.username} to Admin ===`);
+    console.log(`\n=== Promoting ${firstUser.username} to Super Admin ===`);
     
     db.prepare('UPDATE users SET role = ? WHERE id = ?').run('admin', firstUser.id);
     
-    console.log(`✓ ${firstUser.username} has been promoted to admin!`);
-    console.log(`\nYou can now login with username "${firstUser.username}" to access the Admin panel.`);
-    console.log('The Admin tab will appear in the More Options section after login.');
+    console.log(`✓ ${firstUser.username} has been promoted to Super Admin!`);
+    console.log(`\nYou can now login with username "${firstUser.username}" to access the Super Admin side.`);
+    console.log('The Super Admin button will appear in the sidebar after login.');
     
     db.close();
 } catch (error) {

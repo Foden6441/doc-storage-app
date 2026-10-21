@@ -121,11 +121,11 @@ class DocumentStorageApp {
                 this.updateStats();
                 this.loadStorageInfo();
 
-                // Show admin tab if user is admin
+                // Show the Super Admin workspace only to privileged accounts.
                 if (this.currentUser.role === 'admin') {
-                    const adminTabBtn = document.getElementById('admin-tab-btn');
-                    if (adminTabBtn) {
-                        adminTabBtn.style.display = 'inline-flex';
+                    const adminNavBtn = document.getElementById('nav-admin-btn');
+                    if (adminNavBtn) {
+                        adminNavBtn.style.display = 'inline-flex';
                     }
                 }
             }
@@ -150,6 +150,17 @@ class DocumentStorageApp {
         if (!searchInput) {
             console.error('Search input not found!');
             return;
+        }
+
+        // Sidebar toggle button
+        const sidebarToggleBtn = document.getElementById('sidebar-toggle-btn');
+        if (sidebarToggleBtn) {
+            sidebarToggleBtn.addEventListener('click', () => {
+                const sidebar = document.querySelector('.sidebar');
+                if (sidebar) {
+                    sidebar.classList.toggle('collapsed');
+                }
+            });
         }
 
         // Upload button
@@ -284,7 +295,13 @@ class DocumentStorageApp {
                 const result = await window.electronAPI.saveFile(selectedPath, metadata);
                 
                 if (result.success) {
-                    this.showNotification('File uploaded successfully!', 'success');
+                    if (result.cloudBackup?.success) {
+                        this.showNotification('File saved on this computer and backed up to your cloud account.', 'success');
+                    } else if (result.cloudBackup?.skipped) {
+                        this.showNotification('File saved on this computer. Cloud backup is not connected for this account.', 'info');
+                    } else {
+                        this.showNotification(`File saved on this computer. Cloud backup did not complete; retry it later from Settings > Back Up Now. Details: ${result.cloudBackup?.error || 'Unknown error'}`, 'info');
+                    }
                     if (this.currentFolder) {
                         this.loadFilesInFolder(this.currentFolder.id);
                     } else {
@@ -1872,6 +1889,14 @@ class DocumentStorageApp {
             this.showHomeView();
         });
 
+        // Admin panel button
+        const adminNavBtn = document.getElementById('nav-admin-btn');
+        if (adminNavBtn) {
+            adminNavBtn.addEventListener('click', () => {
+                this.showMoreView('admin');
+            });
+        }
+
         document.getElementById('more-back-home-btn').addEventListener('click', () => {
             this.showHomeView();
         });
@@ -2024,64 +2049,20 @@ class DocumentStorageApp {
             }
         });
 
-        document.getElementById('firebase-login-btn').addEventListener('click', async () => {
-            const email = document.getElementById('firebase-email').value;
-            const password = document.getElementById('firebase-password').value;
-
-            if (!email || !password) {
-                this.showNotification('Please enter email and password', 'error');
-                return;
-            }
-
-            const result = await window.electronAPI.firebaseLogin(email, password);
-            if (result.success) {
-                this.showNotification('Logged in to Firebase successfully', 'success');
-                this.updateFirebaseUI();
-            } else {
-                this.showNotification('Firebase login failed: ' + result.error, 'error');
-            }
-        });
-
-        document.getElementById('firebase-register-btn').addEventListener('click', async () => {
-            const email = document.getElementById('firebase-email').value;
-            const password = document.getElementById('firebase-password').value;
-            const username = this.currentUser?.username || 'user';
-
-            if (!email || !password) {
-                this.showNotification('Please enter email and password', 'error');
-                return;
-            }
-
-            const result = await window.electronAPI.firebaseRegister(email, password, username);
-            if (result.success) {
-                this.showNotification('Registered and logged in to Firebase successfully', 'success');
-                this.updateFirebaseUI();
-            } else {
-                this.showNotification('Firebase registration failed: ' + result.error, 'error');
-            }
-        });
-
-        document.getElementById('firebase-logout-btn').addEventListener('click', async () => {
-            const result = await window.electronAPI.firebaseLogout();
-            if (result.success) {
-                this.showNotification('Logged out from Firebase', 'success');
-                this.updateFirebaseUI();
-            } else {
-                this.showNotification('Firebase logout failed: ' + result.error, 'error');
-            }
-        });
-
         document.getElementById('sync-to-cloud-btn').addEventListener('click', async () => {
             const syncStatusText = document.getElementById('sync-status-text');
             syncStatusText.textContent = 'Syncing to cloud...';
 
             const result = await window.electronAPI.syncToCloud();
             if (result.success) {
-                syncStatusText.textContent = `Synced ${result.syncedFiles} files and ${result.syncedFolders} folders to cloud`;
-                this.showNotification('Sync to cloud completed successfully', 'success');
+                syncStatusText.textContent = `Backed up ${result.backedUpFiles} files. ${result.failedFiles?.length || 0} failed.`;
+                this.showNotification('Cloud backup completed successfully', 'success');
             } else {
-                syncStatusText.textContent = 'Sync failed: ' + result.error;
-                this.showNotification('Sync to cloud failed: ' + result.error, 'error');
+                const failed = result.failedFiles?.length || 0;
+                syncStatusText.textContent = failed
+                    ? `Backed up ${result.backedUpFiles || 0} files; ${failed} failed.`
+                    : 'Backup failed: ' + result.error;
+                this.showNotification(syncStatusText.textContent, 'error');
             }
         });
 
@@ -2091,13 +2072,13 @@ class DocumentStorageApp {
 
             const result = await window.electronAPI.syncFromCloud();
             if (result.success) {
-                syncStatusText.textContent = `Downloaded ${result.downloadedFiles} files from cloud`;
-                this.showNotification('Sync from cloud completed successfully', 'success');
+                syncStatusText.textContent = `Restored ${result.restoredFiles} files from cloud`;
+                this.showNotification(syncStatusText.textContent, 'success');
                 this.loadFiles();
                 this.loadFolders();
             } else {
                 syncStatusText.textContent = 'Sync failed: ' + result.error;
-                this.showNotification('Sync from cloud failed: ' + result.error, 'error');
+                this.showNotification('Cloud restore failed: ' + result.error, 'error');
             }
         });
     }
@@ -2215,52 +2196,29 @@ class DocumentStorageApp {
     async updateFirebaseUI() {
         try {
             const status = await window.electronAPI.getFirebaseStatus();
-
             const configSection = document.getElementById('firebase-config-section');
-            const authSection = document.getElementById('firebase-auth-section');
             const syncSection = document.getElementById('firebase-sync-section');
             const statusMessage = document.getElementById('firebase-status-message');
-            const loggedInDiv = document.getElementById('firebase-logged-in');
-            const loggedOutDiv = document.getElementById('firebase-logged-out');
-            const userEmailSpan = document.getElementById('firebase-user-email');
-
-            // Update sidebar sync status
             const syncStatusSection = document.getElementById('sync-status-section');
             const syncStatusTextSidebar = document.getElementById('sync-status-text-sidebar');
             const syncIcon = document.getElementById('sync-icon');
 
             if (status.isInitialized) {
-                syncStatusSection.style.display = 'block';
                 configSection.style.display = 'none';
                 statusMessage.style.display = 'block';
-                authSection.style.display = 'block';
-
-                if (status.currentUser) {
-                    loggedInDiv.style.display = 'block';
-                    loggedOutDiv.style.display = 'none';
-                    userEmailSpan.textContent = status.currentUser;
-                    syncStatusTextSidebar.textContent = 'Connected';
-                    syncIcon.setAttribute('data-lucide', 'cloud-check');
-
-                    if (status.isSyncEnabled) {
-                        syncSection.style.display = 'block';
-                        syncStatusTextSidebar.textContent = 'Sync enabled';
-                    } else {
-                        syncSection.style.display = 'none';
-                        syncStatusTextSidebar.textContent = 'Connected (sync off)';
-                    }
-                } else {
-                    loggedInDiv.style.display = 'none';
-                    loggedOutDiv.style.display = 'block';
-                    syncSection.style.display = 'none';
-                    syncStatusTextSidebar.textContent = 'Not logged in';
-                    syncIcon.setAttribute('data-lucide', 'cloud-off');
-                }
+                syncStatusSection.style.display = 'block';
+                syncSection.style.display = status.currentUser && status.isSyncEnabled ? 'block' : 'none';
+                statusMessage.textContent = status.currentUser
+                    ? `Cloud backup connected as ${status.currentUser}. New uploads are backed up automatically.`
+                    : 'Firebase is ready. Sign in with your email and password to connect cloud backup.';
+                syncStatusTextSidebar.textContent = status.currentUser
+                    ? (status.isSyncEnabled ? 'Cloud backup connected' : 'Cloud backup paused')
+                    : 'Sign in for cloud backup';
+                syncIcon.setAttribute('data-lucide', status.currentUser ? 'cloud-check' : 'cloud-off');
             } else {
                 syncStatusSection.style.display = 'none';
                 configSection.style.display = 'block';
                 statusMessage.style.display = 'none';
-                authSection.style.display = 'none';
                 syncSection.style.display = 'none';
             }
 
@@ -2274,9 +2232,38 @@ class DocumentStorageApp {
     async loadAdminPanel() {
         await this.loadAdminStats();
         await this.loadAdminUsers();
+        await this.loadAdminSubscriptionPlans();
+        await this.loadAdminFiles();
         await this.loadAdminActivityLogs();
         await this.loadAdminSystemSettings();
         await this.loadAdminAdvancedStats();
+        
+        // Setup admin user creation event listeners after admin panel is loaded
+        this.setupAdminUserCreation();
+        this.setupAdminFileManagement();
+    }
+
+    setupAdminUserCreation() {
+        const adminCreateUserBtn = document.getElementById('admin-create-user-btn');
+        if (adminCreateUserBtn) {
+            adminCreateUserBtn.onclick = () => {
+                this.showCreateUserForm();
+            };
+        }
+
+        const adminSaveUserBtn = document.getElementById('admin-save-user-btn');
+        if (adminSaveUserBtn) {
+            adminSaveUserBtn.onclick = () => {
+                this.handleCreateUser();
+            };
+        }
+
+        const adminCancelUserBtn = document.getElementById('admin-cancel-user-btn');
+        if (adminCancelUserBtn) {
+            adminCancelUserBtn.onclick = () => {
+                this.hideCreateUserForm();
+            };
+        }
     }
 
     async loadAdminStats() {
@@ -2309,6 +2296,20 @@ class DocumentStorageApp {
                     return;
                 }
 
+                // Populate user filter dropdown for file management
+                const userFilter = document.getElementById('admin-file-user-filter');
+                if (userFilter) {
+                    const currentValue = userFilter.value;
+                    userFilter.innerHTML = '<option value="">All Users</option>';
+                    result.users.forEach(user => {
+                        const option = document.createElement('option');
+                        option.value = user.id;
+                        option.textContent = user.username;
+                        userFilter.appendChild(option);
+                    });
+                    userFilter.value = currentValue;
+                }
+
                 result.users.forEach(user => {
                     const row = document.createElement('tr');
                     const storageUsed = user.storage_used || 0;
@@ -2319,7 +2320,7 @@ class DocumentStorageApp {
                         <td>${user.id}</td>
                         <td>${this.escapeHtml(user.username)}</td>
                         <td>${this.escapeHtml(user.email)}</td>
-                        <td><span class="role-badge ${user.role}">${user.role}</span></td>
+                        <td><span class="role-badge ${user.role}">${user.role === 'admin' ? 'Super Admin' : 'User'}</span></td>
                         <td><span class="role-badge user">${(user.subscription_tier || 'free').toUpperCase()}</span></td>
                         <td>${this.formatFileSize(storageUsed)} / ${this.formatFileSize(storageLimit)} (${storagePercentage}%)</td>
                         <td><span class="status-badge ${user.is_active ? 'active' : 'inactive'}">${user.is_active ? 'Active' : 'Inactive'}</span></td>
@@ -2332,7 +2333,7 @@ class DocumentStorageApp {
                                     <option value="premium" ${user.subscription_tier === 'premium' ? 'selected' : ''}>Premium</option>
                                 </select>
                                 ${user.role !== 'admin' ? `
-                                    <button class="btn btn-small btn-secondary" onclick="app.handleMakeAdmin(${user.id})">Make Admin</button>
+                                    <button class="btn btn-small btn-secondary" onclick="app.handleMakeAdmin(${user.id})">Make Super Admin</button>
                                 ` : ''}
                                 ${user.is_active ? `
                                     <button class="btn btn-small btn-secondary" onclick="app.handleDeactivateUser(${user.id})">Deactivate</button>
@@ -2356,6 +2357,136 @@ class DocumentStorageApp {
         }
     }
 
+    async loadAdminSubscriptionPlans() {
+        const container = document.getElementById('admin-subscription-plans-container');
+        container.innerHTML = '<div class="loading">Loading subscription plans...</div>';
+
+        try {
+            const result = await window.electronAPI.getSubscriptionPlans();
+            if (result.success) {
+                container.innerHTML = '';
+                
+                const plansGrid = document.createElement('div');
+                plansGrid.style.display = 'grid';
+                plansGrid.style.gridTemplateColumns = 'repeat(auto-fit, minmax(250px, 1fr))';
+                plansGrid.style.gap = '20px';
+
+                result.plans.forEach(plan => {
+                    const planCard = document.createElement('div');
+                    planCard.style.background = 'var(--bg-secondary)';
+                    planCard.style.padding = '20px';
+                    planCard.style.borderRadius = '8px';
+                    planCard.style.border = '1px solid var(--border-color)';
+                    
+                    planCard.innerHTML = `
+                        <h4 style="margin-bottom: 10px; color: var(--text-primary);">${plan.name}</h4>
+                        <div style="font-size: 24px; font-weight: bold; margin-bottom: 15px; color: var(--accent-color);">
+                            $${plan.price}/month
+                        </div>
+                        <div style="margin-bottom: 15px; color: var(--text-secondary);">
+                            <strong>Storage:</strong> ${this.formatFileSize(plan.storage)}
+                        </div>
+                        <ul style="list-style: none; padding: 0; margin: 0;">
+                            ${plan.features.map(feature => `
+                                <li style="padding: 5px 0; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">
+                                    ✓ ${feature}
+                                </li>
+                            `).join('')}
+                        </ul>
+                    `;
+                    plansGrid.appendChild(planCard);
+                });
+
+                container.appendChild(plansGrid);
+            } else {
+                container.innerHTML = `<div class="empty-state">Error: ${result.error}</div>`;
+            }
+        } catch (error) {
+            console.error('Error loading subscription plans:', error);
+            container.innerHTML = `<div class="empty-state">Error loading subscription plans</div>`;
+        }
+    }
+
+    async loadAdminFiles(userId = null) {
+        const tbody = document.getElementById('admin-files-table-body');
+        tbody.innerHTML = '<tr><td colspan="7" class="loading">Loading files...</td></tr>';
+
+        try {
+            const result = await window.electronAPI.adminGetAllFiles(userId);
+            if (result.success) {
+                tbody.innerHTML = '';
+                
+                if (result.files.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No files found</td></tr>';
+                    return;
+                }
+
+                result.files.forEach(file => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${file.id}</td>
+                        <td>${this.escapeHtml(file.name)}</td>
+                        <td>${this.escapeHtml(file.username || 'Unknown')}</td>
+                        <td>${this.formatFileSize(file.size)}</td>
+                        <td>${this.escapeHtml(file.file_type || 'Unknown')}</td>
+                        <td>${this.formatDateTime(file.upload_date)}</td>
+                        <td>
+                            <div class="admin-actions">
+                                <button class="btn btn-small btn-danger" onclick="app.handleAdminDeleteFile(${file.id})">Delete</button>
+                            </div>
+                        </td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            } else {
+                tbody.innerHTML = `<tr><td colspan="7" class="empty-state">Error: ${result.error}</td></tr>`;
+            }
+        } catch (error) {
+            console.error('Error loading admin files:', error);
+            tbody.innerHTML = `<tr><td colspan="7" class="empty-state">Error loading files</td></tr>`;
+        }
+    }
+
+    setupAdminFileManagement() {
+        const userFilter = document.getElementById('admin-file-user-filter');
+        if (userFilter) {
+            userFilter.onchange = () => {
+                const userId = userFilter.value ? parseInt(userFilter.value) : null;
+                this.loadAdminFiles(userId);
+            };
+        }
+
+        const refreshBtn = document.getElementById('admin-refresh-files-btn');
+        if (refreshBtn) {
+            refreshBtn.onclick = () => {
+                const userFilter = document.getElementById('admin-file-user-filter');
+                const userId = userFilter.value ? parseInt(userFilter.value) : null;
+                this.loadAdminFiles(userId);
+            };
+        }
+    }
+
+    async handleAdminDeleteFile(fileId) {
+        if (!confirm('Are you sure you want to delete this file? This action cannot be undone.')) {
+            return;
+        }
+
+        try {
+            const result = await window.electronAPI.adminDeleteFile(fileId);
+            if (result.success) {
+                this.showNotification('File deleted successfully', 'success');
+                const userFilter = document.getElementById('admin-file-user-filter');
+                const userId = userFilter.value ? parseInt(userFilter.value) : null;
+                await this.loadAdminFiles(userId);
+            } else {
+                this.showNotification('Failed to delete file: ' + result.error, 'error');
+            }
+        } catch (error) {
+            console.error('Error deleting file:', error);
+            this.showNotification('Error deleting file', 'error');
+        }
+    }
+
     async handleAdminChangeSubscription(userId, planId) {
         try {
             const result = await window.electronAPI.adminUpdateUserSubscription(userId, planId);
@@ -2372,14 +2503,14 @@ class DocumentStorageApp {
     }
 
     async handleMakeAdmin(userId) {
-        if (!confirm('Are you sure you want to make this user an admin?')) {
+        if (!confirm('Are you sure you want to give this user Super Admin access?')) {
             return;
         }
 
         try {
             const result = await window.electronAPI.adminSetUserRole(userId, 'admin');
             if (result.success) {
-                this.showNotification('User promoted to admin', 'success');
+                this.showNotification('User promoted to Super Admin', 'success');
                 await this.loadAdminUsers();
                 await this.loadAdminStats();
             } else {
@@ -2844,7 +2975,7 @@ class DocumentStorageApp {
 
             if (!session.isActive) {
                 this.showNotification('Your session has expired. Please log in again.', 'error');
-                setTimeout(() => this.handleLogout(), 1500);
+                // Don't auto-logout, just show the message
             }
         } catch (error) {
             console.error('Error loading session:', error);
@@ -2911,6 +3042,72 @@ class DocumentStorageApp {
             document.getElementById('user-info').style.display = 'flex';
             document.getElementById('username').textContent = this.currentUser.username;
             document.getElementById('user-email').textContent = this.currentUser.email;
+        }
+    }
+
+    showCreateUserForm() {
+        document.getElementById('admin-create-user-form').style.display = 'block';
+        document.getElementById('admin-create-user-btn').style.display = 'none';
+    }
+
+    hideCreateUserForm() {
+        document.getElementById('admin-create-user-form').style.display = 'none';
+        document.getElementById('admin-create-user-btn').style.display = 'inline-flex';
+        // Clear form fields
+        document.getElementById('new-username').value = '';
+        document.getElementById('new-email').value = '';
+        document.getElementById('new-password').value = '';
+        document.getElementById('new-role').value = 'user';
+    }
+
+    async handleCreateUser() {
+        const usernameInput = document.getElementById('new-username');
+        const emailInput = document.getElementById('new-email');
+        const passwordInput = document.getElementById('new-password');
+        const roleInput = document.getElementById('new-role');
+
+        if (!usernameInput || !emailInput || !passwordInput || !roleInput) {
+            console.error('Form elements not found');
+            this.showNotification('Form elements not found', 'error');
+            return;
+        }
+
+        const username = usernameInput.value.trim();
+        const email = emailInput.value.trim();
+        const password = passwordInput.value;
+        const role = roleInput.value;
+
+        console.log('Form values:', { username, email, password: password ? '***' : '', role });
+
+        if (!username || !email || !password) {
+            this.showNotification('Please fill in all fields', 'error');
+            return;
+        }
+
+        if (password.length < 6) {
+            this.showNotification('Password must be at least 6 characters', 'error');
+            return;
+        }
+
+        try {
+            const result = await window.electronAPI.adminCreateUser({
+                username,
+                email,
+                password,
+                role
+            });
+
+            if (result.success) {
+                this.showNotification('User created successfully!', 'success');
+                this.hideCreateUserForm();
+                // Reload users table
+                this.loadAdminUsers();
+            } else {
+                this.showNotification(result.error || 'Failed to create user', 'error');
+            }
+        } catch (error) {
+            console.error('Error creating user:', error);
+            this.showNotification('Error creating user', 'error');
         }
     }
 
