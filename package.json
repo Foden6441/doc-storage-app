@@ -8,7 +8,7 @@
     "force-clean": "powershell -ExecutionPolicy Bypass -File force-clean.ps1",
     "kill-electron": "powershell -ExecutionPolicy Bypass -File kill-electron.ps1",
     "prebuild": "npm run kill-electron || echo Skipping kill-electron && npm run force-clean || echo Cleanup failed, continuing anyway",
-    "dev": "NODE_ENV=development cross-env ELECTRON_IS_DEV=1 electron .",
+    "dev": "cross-env NODE_ENV=development ELECTRON_IS_DEV=1 electron .",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "build": "npm run rebuild && electron-builder",
     "build-win": "npm run rebuild && electron-builder --win",
