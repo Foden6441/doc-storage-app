@@ -2011,76 +2011,7 @@ class DocumentStorageApp {
             });
         }
 
-        const viewPlansBtn = document.getElementById('view-plans-btn');
-        if (viewPlansBtn) {
-            viewPlansBtn.addEventListener('click', () => {
-                const container = document.getElementById('subscription-plans-container');
-                if (container.style.display === 'none') {
-                    container.style.display = 'block';
-                    this.loadSubscriptionPlans();
-                } else {
-                    container.style.display = 'none';
-                }
-            });
-        }
-
-        // Firebase Cloud Sync listeners
-        document.getElementById('setting-cloud-sync').addEventListener('change', async (e) => {
-            const enabled = e.target.checked;
-            await window.electronAPI.setCloudSync(enabled);
-            this.updateFirebaseUI();
-        });
-
-        document.getElementById('save-firebase-config-btn').addEventListener('click', async () => {
-            const config = {
-                apiKey: document.getElementById('firebase-api-key').value,
-                authDomain: document.getElementById('firebase-auth-domain').value,
-                projectId: document.getElementById('firebase-project-id').value,
-                storageBucket: document.getElementById('firebase-storage-bucket').value,
-                appId: document.getElementById('firebase-app-id').value
-            };
-
-            const result = await window.electronAPI.saveFirebaseConfig(config);
-            if (result.success) {
-                this.showNotification('Firebase configuration saved successfully', 'success');
-                this.updateFirebaseUI();
-            } else {
-                this.showNotification('Failed to save Firebase configuration: ' + result.error, 'error');
-            }
-        });
-
-        document.getElementById('sync-to-cloud-btn').addEventListener('click', async () => {
-            const syncStatusText = document.getElementById('sync-status-text');
-            syncStatusText.textContent = 'Syncing to cloud...';
-
-            const result = await window.electronAPI.syncToCloud();
-            if (result.success) {
-                syncStatusText.textContent = `Backed up ${result.backedUpFiles} files. ${result.failedFiles?.length || 0} failed.`;
-                this.showNotification('Cloud backup completed successfully', 'success');
-            } else {
-                const failed = result.failedFiles?.length || 0;
-                syncStatusText.textContent = failed
-                    ? `Backed up ${result.backedUpFiles || 0} files; ${failed} failed.`
-                    : 'Backup failed: ' + result.error;
-                this.showNotification(syncStatusText.textContent, 'error');
-            }
-        });
-
-        document.getElementById('sync-from-cloud-btn').addEventListener('click', async () => {
-            const syncStatusText = document.getElementById('sync-status-text');
-            syncStatusText.textContent = 'Syncing from cloud...';
-
-            const result = await window.electronAPI.syncFromCloud();
-            if (result.success) {
-                syncStatusText.textContent = `Restored ${result.restoredFiles} files from cloud`;
-                this.showNotification(syncStatusText.textContent, 'success');
-                this.loadFiles();
-                this.loadFolders();
-            } else {
-                syncStatusText.textContent = 'Sync failed: ' + result.error;
-                this.showNotification('Cloud restore failed: ' + result.error, 'error');
-            }
-        });
+        // Storage & Subscription and Cloud Sync sections removed - local storage only
     }
 
     async loadSettingsPanel() {
@@ -2089,7 +2020,6 @@ class DocumentStorageApp {
         document.getElementById('setting-theme').value = settings.theme || 'light';
         document.getElementById('setting-language').value = settings.language || 'en';
         document.getElementById('setting-auto-backup').checked = Boolean(settings.autoBackup);
-        document.getElementById('setting-cloud-sync').checked = Boolean(settings.cloudSync);
 
         const lastBackupEl = document.getElementById('last-backup-value');
         if (settings.lastBackupAt) {
@@ -2101,143 +2031,18 @@ class DocumentStorageApp {
         }
 
         applyTheme(settings.theme);
-
-        // Update Firebase UI
-        await this.updateFirebaseUI();
-
-        // Load storage info for settings panel
-        await this.loadSettingsStorageInfo();
     }
 
-    async loadSettingsStorageInfo() {
-        try {
-            const result = await window.electronAPI.getUserStorageInfo();
-            if (result.success) {
-                const storageInfo = result.storageInfo;
-                const progressFill = document.getElementById('settings-storage-progress');
-                const usedText = document.getElementById('settings-storage-used');
-                const limitText = document.getElementById('settings-storage-limit');
-                const tierBadge = document.getElementById('current-tier-badge');
-
-                if (progressFill) {
-                    progressFill.style.width = storageInfo.storagePercentage + '%';
-                    progressFill.classList.remove('warning', 'danger');
-                    if (storageInfo.storagePercentage >= 90) {
-                        progressFill.classList.add('danger');
-                    } else if (storageInfo.storagePercentage >= 75) {
-                        progressFill.classList.add('warning');
-                    }
-                }
-
-                if (usedText) {
-                    usedText.textContent = this.formatFileSize(storageInfo.storageUsed);
-                }
-
-                if (limitText) {
-                    limitText.textContent = '/ ' + this.formatFileSize(storageInfo.storageLimit);
-                }
-
-                if (tierBadge) {
-                    tierBadge.textContent = storageInfo.subscriptionTier.charAt(0).toUpperCase() + storageInfo.subscriptionTier.slice(1);
-                }
-            }
-        } catch (error) {
-            console.error('Error loading storage info:', error);
-        }
-    }
-
-    async loadSubscriptionPlans() {
-        try {
-            const result = await window.electronAPI.getSubscriptionPlans();
-            if (result.success) {
-                const plans = result.plans;
-                const container = document.getElementById('subscription-plans');
-                container.innerHTML = '';
-
-                plans.forEach(plan => {
-                    const card = document.createElement('div');
-                    card.className = 'plan-card' + (plan.id === 'basic' ? ' featured' : '');
-                    card.innerHTML = `
-                        <div class="plan-name">${plan.name}</div>
-                        <div class="plan-price">$${plan.price}<span>/month</span></div>
-                        <div class="plan-storage">${this.formatFileSize(plan.storage)}</div>
-                        <ul class="plan-features">
-                            ${plan.features.map(feature => `<li>${feature}</li>`).join('')}
-                        </ul>
-                        <button class="btn btn-secondary" onclick="app.handleUpgradeSubscription('${plan.id}')">
-                            ${plan.price === 0 ? 'Current Plan' : 'Upgrade'}
-                        </button>
-                    `;
-                    container.appendChild(card);
-                });
-            }
-        } catch (error) {
-            console.error('Error loading subscription plans:', error);
-        }
-    }
-
-    async handleUpgradeSubscription(planId) {
-        try {
-            const result = await window.electronAPI.upgradeSubscription(planId);
-            if (result.success) {
-                this.showNotification(`Successfully upgraded to ${result.plan.name} plan!`, 'success');
-                await this.loadSettingsStorageInfo();
-                await this.loadStorageInfo();
-                document.getElementById('subscription-plans-container').style.display = 'none';
-            } else {
-                this.showNotification('Failed to upgrade: ' + result.error, 'error');
-            }
-        } catch (error) {
-            console.error('Error upgrading subscription:', error);
-            this.showNotification('Error upgrading subscription', 'error');
-        }
-    }
-
-    async updateFirebaseUI() {
-        try {
-            const status = await window.electronAPI.getFirebaseStatus();
-            const configSection = document.getElementById('firebase-config-section');
-            const syncSection = document.getElementById('firebase-sync-section');
-            const statusMessage = document.getElementById('firebase-status-message');
-            const syncStatusSection = document.getElementById('sync-status-section');
-            const syncStatusTextSidebar = document.getElementById('sync-status-text-sidebar');
-            const syncIcon = document.getElementById('sync-icon');
-
-            if (status.isInitialized) {
-                configSection.style.display = 'none';
-                statusMessage.style.display = 'block';
-                syncStatusSection.style.display = 'block';
-                syncSection.style.display = status.currentUser && status.isSyncEnabled ? 'block' : 'none';
-                statusMessage.textContent = status.currentUser
-                    ? `Cloud backup connected as ${status.currentUser}. New uploads are backed up automatically.`
-                    : 'Firebase is ready. Sign in with your email and password to connect cloud backup.';
-                syncStatusTextSidebar.textContent = status.currentUser
-                    ? (status.isSyncEnabled ? 'Cloud backup connected' : 'Cloud backup paused')
-                    : 'Sign in for cloud backup';
-                syncIcon.setAttribute('data-lucide', status.currentUser ? 'cloud-check' : 'cloud-off');
-            } else {
-                syncStatusSection.style.display = 'none';
-                configSection.style.display = 'block';
-                statusMessage.style.display = 'none';
-                syncSection.style.display = 'none';
-            }
-
-            // Reinitialize Lucide icons
-            lucide.createIcons();
-        } catch (error) {
-            console.error('Error updating Firebase UI:', error);
-        }
-    }
+    // Storage & Subscription functions removed - local storage only
 
     async loadAdminPanel() {
         await this.loadAdminStats();
         await this.loadAdminUsers();
-        await this.loadAdminSubscriptionPlans();
         await this.loadAdminFiles();
         await this.loadAdminActivityLogs();
         await this.loadAdminSystemSettings();
         await this.loadAdminAdvancedStats();
-        
+
         // Setup admin user creation event listeners after admin panel is loaded
         this.setupAdminUserCreation();
         this.setupAdminFileManagement();
@@ -2312,26 +2117,15 @@ class DocumentStorageApp {
 
                 result.users.forEach(user => {
                     const row = document.createElement('tr');
-                    const storageUsed = user.storage_used || 0;
-                    const storageLimit = user.storage_limit || 5368709120;
-                    const storagePercentage = Math.round((storageUsed / storageLimit) * 100);
-
                     row.innerHTML = `
                         <td>${user.id}</td>
                         <td>${this.escapeHtml(user.username)}</td>
                         <td>${this.escapeHtml(user.email)}</td>
                         <td><span class="role-badge ${user.role}">${user.role === 'admin' ? 'Super Admin' : 'User'}</span></td>
-                        <td><span class="role-badge user">${(user.subscription_tier || 'free').toUpperCase()}</span></td>
-                        <td>${this.formatFileSize(storageUsed)} / ${this.formatFileSize(storageLimit)} (${storagePercentage}%)</td>
                         <td><span class="status-badge ${user.is_active ? 'active' : 'inactive'}">${user.is_active ? 'Active' : 'Inactive'}</span></td>
                         <td>${this.formatDateTime(user.created_at)}</td>
                         <td>
                             <div class="admin-actions">
-                                <select class="btn btn-small btn-secondary" onchange="app.handleAdminChangeSubscription(${user.id}, this.value)">
-                                    <option value="free" ${user.subscription_tier === 'free' ? 'selected' : ''}>Free</option>
-                                    <option value="basic" ${user.subscription_tier === 'basic' ? 'selected' : ''}>Basic</option>
-                                    <option value="premium" ${user.subscription_tier === 'premium' ? 'selected' : ''}>Premium</option>
-                                </select>
                                 ${user.role !== 'admin' ? `
                                     <button class="btn btn-small btn-secondary" onclick="app.handleMakeAdmin(${user.id})">Make Super Admin</button>
                                 ` : ''}
@@ -2349,11 +2143,11 @@ class DocumentStorageApp {
 
                 lucide.createIcons();
             } else {
-                tbody.innerHTML = `<tr><td colspan="9" class="empty-state">Error: ${result.error}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="7" class="empty-state">Error: ${result.error}</td></tr>`;
             }
         } catch (error) {
             console.error('Error loading admin users:', error);
-            tbody.innerHTML = `<tr><td colspan="9" class="empty-state">Error loading users</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="7" class="empty-state">Error loading users</td></tr>`;
         }
     }
 

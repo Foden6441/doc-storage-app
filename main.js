@@ -276,6 +276,8 @@ async function importFolderRecursively(folderPath, dbFolderId, userId) {
           };
 
           const fileId = db.saveFile(fileData);
+          // Cloud backup disabled - documents stored locally only
+          /*
           const activeUser = authService.getCurrentUser();
           if (activeUser?.id === userId && activeUser.firebaseUid && firebaseService.isSyncEnabled()) {
             try {
@@ -284,6 +286,7 @@ async function importFolderRecursively(folderPath, dbFolderId, userId) {
               console.error(`Cloud backup failed for imported file ${fileName}:`, backupError);
             }
           }
+          */
           importedFiles.push({
             id: fileId,
             name: fileName,
@@ -388,10 +391,10 @@ async function startApp() {
       console.log('Firebase initialized with default configuration');
     }
 
-    // Enable Firebase sync by default
-    firebaseService.setSyncEnabled(true);
+    // Disable cloud sync - documents stored locally only
+    firebaseService.setSyncEnabled(false);
     authService.setFirebaseEnabled(true);
-    console.log('Firebase sync enabled by default');
+    console.log('Firebase authentication enabled, cloud sync disabled (local storage only)');
   } catch (error) {
     console.log('Firebase failed to initialize:', error.message);
   }
@@ -523,6 +526,8 @@ ipcMain.handle('save-file', async (event, filePath, metadata) => {
     // Log activity
     db.logActivity(currentUser.id, 'FILE_UPLOADED', `File uploaded: ${fileName}`);
 
+    // Cloud backup disabled - documents stored locally only
+    /*
     let cloudBackup = { success: false, skipped: true };
     if (currentUser.firebaseUid && firebaseService.isSyncEnabled()) {
       try {
@@ -531,8 +536,9 @@ ipcMain.handle('save-file', async (event, filePath, metadata) => {
         cloudBackup = { success: false, error: cloudError.message };
       }
     }
+    */
 
-    return { success: true, id, fileData, cloudBackup };
+    return { success: true, id, fileData, cloudBackup: { success: false, skipped: true, message: 'Cloud backup disabled - local storage only' } };
   } catch (error) {
     console.error('Error saving file:', error);
     return { success: false, error: error.message };
@@ -716,6 +722,8 @@ ipcMain.handle('login-user', async (event, username, password) => {
     }
 
     const result = await authService.loginUser(sanitize.string(username), password);
+    // Cloud restore disabled - documents stored locally only
+    /*
     if (result.success && result.user?.firebaseUid && firebaseService.isSyncEnabled()) {
       result.backupRestore = await restoreCloudBackup(result.user);
       if (result.backupRestore.success && result.backupRestore.restoredFiles > 0) {
@@ -725,6 +733,10 @@ ipcMain.handle('login-user', async (event, username, password) => {
       }
     } else if (result.success && !result.user?.firebaseUid) {
       result.message = 'Signed in on this computer. This local account is not connected to cloud backup.';
+    }
+    */
+    if (result.success) {
+      result.message = 'Signed in successfully. Documents are stored locally on your device.';
     }
     return result;
   } catch (error) {

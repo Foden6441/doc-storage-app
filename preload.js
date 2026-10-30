@@ -41,15 +41,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   searchFiles: (query, options) => ipcRenderer.invoke('search-files', query, options),
   advancedSearch: (searchParams) => ipcRenderer.invoke('advanced-search', searchParams),
 
-  // Firebase Cloud Sync
-  saveFirebaseConfig: (config) => ipcRenderer.invoke('save-firebase-config', config),
-  getFirebaseStatus: () => ipcRenderer.invoke('get-firebase-status'),
-  setCloudSync: (enabled) => ipcRenderer.invoke('set-cloud-sync', enabled),
-  firebaseLogin: (email, password) => ipcRenderer.invoke('firebase-login', email, password),
-  firebaseRegister: (email, password, username) => ipcRenderer.invoke('firebase-register', email, password, username),
-  firebaseLogout: () => ipcRenderer.invoke('firebase-logout'),
-  syncToCloud: () => ipcRenderer.invoke('sync-to-cloud'),
-  syncFromCloud: () => ipcRenderer.invoke('sync-from-cloud'),
+  // Firebase Cloud Sync - disabled, local storage only
+  // saveFirebaseConfig: (config) => ipcRenderer.invoke('save-firebase-config', config),
+  // getFirebaseStatus: () => ipcRenderer.invoke('get-firebase-status'),
+  // setCloudSync: (enabled) => ipcRenderer.invoke('set-cloud-sync', enabled),
+  // firebaseLogin: (email, password) => ipcRenderer.invoke('firebase-login', email, password),
+  // firebaseRegister: (email, password, username) => ipcRenderer.invoke('firebase-register', email, password, username),
+  // firebaseLogout: () => ipcRenderer.invoke('firebase-logout'),
+  // syncToCloud: () => ipcRenderer.invoke('sync-to-cloud'),
+  // syncFromCloud: () => ipcRenderer.invoke('sync-from-cloud'),
 
   // Admin Panel
   adminGetUsers: () => ipcRenderer.invoke('admin-get-users'),
@@ -65,12 +65,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   adminSetSystemSetting: (key, value, description) => ipcRenderer.invoke('admin-set-system-setting', key, value, description),
   adminDeleteSystemSetting: (key) => ipcRenderer.invoke('admin-delete-system-setting', key),
   adminGetAdvancedStats: () => ipcRenderer.invoke('admin-get-advanced-stats'),
-  adminUpdateUserSubscription: (userId, planId) => ipcRenderer.invoke('admin-update-user-subscription', userId, planId),
+  // adminUpdateUserSubscription: (userId, planId) => ipcRenderer.invoke('admin-update-user-subscription', userId, planId),
   adminGetAllFiles: (userId) => ipcRenderer.invoke('admin-get-all-files', userId),
   adminDeleteFile: (fileId) => ipcRenderer.invoke('admin-delete-file', fileId),
 
-  // Subscription and Storage
+  // Storage - disabled subscription plans
   getUserStorageInfo: () => ipcRenderer.invoke('get-user-storage-info'),
-  getSubscriptionPlans: () => ipcRenderer.invoke('get-subscription-plans'),
-  upgradeSubscription: (planId) => ipcRenderer.invoke('upgrade-subscription', planId)
+  // getSubscriptionPlans: () => ipcRenderer.invoke('get-subscription-plans'),
+  // upgradeSubscription: (planId) => ipcRenderer.invoke('upgrade-subscription', planId)
 });

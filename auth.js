@@ -9,7 +9,7 @@ class AuthService {
         this.dbPath = dbPath;
         this.currentUser = null;
         this.fileDatabase = fileDatabase;
-        this.useFirebase = false; // Disable Firebase due to network issues
+        this.useFirebase = true; // Enable Firebase for authentication
     }
 
     init() {
