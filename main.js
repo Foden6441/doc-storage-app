@@ -5,9 +5,10 @@ const Database = require('./database.js');
 const AuthService = require('./auth.js');
 const { initAppPaths, getDbPath, getUploadsDir } = require('./app-paths.js');
 const firebaseService = require('./firebase.js');
+const FileEncryption = require('./file-encryption.js');
 
 // Handle different Electron loading scenarios
-let app, BrowserWindow, ipcMain, dialog;
+let app, BrowserWindow, ipcMain, dialog, safeStorage;
 try {
   // Try the standard way first
   const electron = require('electron');
@@ -17,9 +18,10 @@ try {
     BrowserWindow = require('electron').BrowserWindow;
     ipcMain = require('electron').ipcMain;
     dialog = require('electron').dialog;
+    safeStorage = require('electron').safeStorage;
   } else {
     // Standard electron module
-    ({ app, BrowserWindow, ipcMain, dialog } = electron);
+    ({ app, BrowserWindow, ipcMain, dialog, safeStorage } = electron);
   }
 } catch (e) {
   console.error('Failed to load electron:', e);
@@ -30,6 +32,16 @@ let mainWindow;
 let db;
 let authService;
 let firebaseConfig = null;
+let fileEncryption;
+
+function encryptStoredFiles() {
+  const uploadsDir = getUploadsDir();
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  for (const name of fs.readdirSync(uploadsDir)) {
+    const filePath = path.join(uploadsDir, name);
+    if (fs.statSync(filePath).isFile()) fileEncryption.encryptFile(filePath);
+  }
+}
 
 // Default Firebase configuration (pre-configured for all users)
 const DEFAULT_FIREBASE_CONFIG = {
@@ -260,7 +272,7 @@ async function importFolderRecursively(folderPath, dbFolderId, userId) {
           const destinationPath = path.join(uploadDir, uniqueFileName);
 
           // Copy file to uploads directory
-          fs.copyFileSync(itemPath, destinationPath);
+          fileEncryption.encryptFile(itemPath, destinationPath);
 
           // Save file metadata to database
           const fileData = {
@@ -368,6 +380,9 @@ function showStartupError(error) {
 
 async function startApp() {
   initAppPaths();
+  fileEncryption = new FileEncryption(safeStorage, path.join(app.getPath('userData'), 'file-encryption-key'));
+  fileEncryption.initialize();
+  encryptStoredFiles();
   const dbPath = getDbPath();
 
   db = new Database(dbPath);
@@ -503,7 +518,7 @@ ipcMain.handle('save-file', async (event, filePath, metadata) => {
     const uploadDir = getUploadsDir();
     fs.mkdirSync(uploadDir, { recursive: true });
     const destinationPath = path.join(uploadDir, `${currentUser.id}_${Date.now()}_${fileName}`);
-    fs.copyFileSync(filePath, destinationPath);
+    fileEncryption.encryptFile(filePath, destinationPath);
 
     const fileData = {
       userId: currentUser.id,
@@ -672,7 +687,17 @@ ipcMain.handle('open-file', async (event, fileId) => {
     }
     if (file && fs.existsSync(file.storedPath)) {
       const { shell } = require('electron');
-      shell.openPath(file.storedPath);
+      const openedDir = path.join(app.getPath('temp'), 'doc-storage-open');
+      fs.mkdirSync(openedDir, { recursive: true });
+      const openedPath = path.join(openedDir, `${crypto.randomUUID()}_${file.name}`);
+      fileEncryption.decryptToFile(file.storedPath, openedPath);
+      const openError = await shell.openPath(openedPath);
+      if (openError) {
+        fs.rmSync(openedPath, { force: true });
+        return { success: false, error: openError };
+      }
+      // External applications need a readable copy; remove it after a short period.
+      setTimeout(() => fs.rmSync(openedPath, { force: true }), 30 * 60 * 1000).unref();
       return { success: true };
     }
     return { success: false, error: 'File not found' };
@@ -997,6 +1022,7 @@ ipcMain.handle('import-backup', async () => {
         fs.rmSync(uploadsPath, { recursive: true, force: true });
       }
       copyRecursive(backupUploads, uploadsPath);
+      encryptStoredFiles();
     }
 
     db.init();
@@ -1216,7 +1242,7 @@ ipcMain.handle('add-file-to-folder', async (event, folderId) => {
       const destinationPath = path.join(uploadDir, fileName);
 
       // Copy file to uploads directory
-      fs.copyFileSync(filePath, destinationPath);
+      fileEncryption.encryptFile(filePath, destinationPath);
 
       // Save metadata to database
       const currentUser = authService.getCurrentUser();

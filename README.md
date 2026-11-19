@@ -11,6 +11,7 @@ A modern Electron-based desktop application for storing and managing your docume
 - 🎨 **Modern UI**: Beautiful gradient design with smooth animations
 - 🔍 **File Organization**: Automatic file type detection and categorization
 - 💾 **Local Storage**: Files stored securely on your local machine
+- 🔐 **Encrypted Files**: Uploaded files are encrypted at rest with AES-256-GCM; the encryption key is protected by the operating system
 - 🗄️ **SQLite Database**: Reliable metadata storage
 - 👤 **User Isolation**: Each user has their own private file storage
 
@@ -55,7 +56,7 @@ npm start
 2. **Upload Files**:
    - Click the "Upload File" button to browse and select files
    - Or drag and drop files directly onto the upload area
-   - Files will be copied to the `uploads/` directory
+   - Files are encrypted before they are saved in the `uploads/` directory
 
 3. **View Files**:
    - All uploaded files are displayed in a grid layout
@@ -63,7 +64,7 @@ npm start
    - Files are automatically categorized by type with appropriate icons
 
 4. **Manage Files**:
-   - Click "Open" to open a file with your system's default application
+   - Click "Open" to decrypt a temporary copy and open it with your system's default application
    - Click "Delete" to remove a file (with confirmation)
    - Use the "Refresh" button to reload the file list
 
@@ -95,6 +96,8 @@ doc-storage-app/
 ## Database
 
 The app uses SQLite (via `better-sqlite3`) to store file metadata. The database file (`documents.db`) is created automatically in the project root.
+
+Uploaded files are encrypted with AES-256-GCM before storage. The app protects the encryption key using Electron's operating-system-backed `safeStorage`. Existing files in the app's uploads folder are encrypted when the app starts. Opening a file creates a temporary decrypted copy in the operating system temp directory, which is removed after 30 minutes; anyone who can access that temp directory during that time may be able to read it. Exported backups contain encrypted files and can only be restored where the same operating-system protected key is available. Keep the app data and backup together, and do not delete `file-encryption-key` from the app data folder.
 
 ### Database Schema
 
